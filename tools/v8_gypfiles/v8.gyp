@@ -53,6 +53,7 @@
       "<(V8_ROOT)/src/builtins/ic-callable.tq",
       "<(V8_ROOT)/src/builtins/ic.tq",
       "<(V8_ROOT)/src/builtins/internal-coverage.tq",
+      "<(V8_ROOT)/src/builtins/internal.tq",
       "<(V8_ROOT)/src/builtins/iterator.tq",
       "<(V8_ROOT)/src/builtins/math.tq",
       "<(V8_ROOT)/src/builtins/number.tq",
