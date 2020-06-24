@@ -727,6 +727,7 @@
       'type': 'static_library',
       'dependencies': [
         # Code generators that only need to be build for the host.
+        'cppgc_base',
         'torque_generated_definitions',
         'v8_headers',
         'v8_libbase',
@@ -736,6 +737,7 @@
         # BUILD.gn public_deps
         'generate_bytecode_builtins_list',
         'run_torque',
+        'v8_cppgc_shared',
         'v8_maybe_icu',
         'v8_zlib',
       ],
@@ -1460,6 +1462,100 @@
         },
       ],
     },  # run_gen-regexp-special-case
+    {
+      'target_name': 'cppgc_base',
+      'type': 'none',
+      'conditions': [
+        ['want_separate_host_toolset', {
+          'toolsets': ['host', 'target'],
+        }],
+      ],
+      'direct_dependent_settings': {
+        'sources': [
+          '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "v8_source_set.\\"cppgc_base.*?sources = ")',
+        ],
+      },
+    },  # cppgc_base
+    {
+      'target_name': 'v8_cppgc_shared',
+      'type': 'none',
+      'conditions': [
+        ['want_separate_host_toolset', {
+          'toolsets': ['host', 'target'],
+        }],
+      ],
+      'direct_dependent_settings': {
+        'sources': [
+          '<(V8_ROOT)/src/heap/base/stack.cc',
+          '<(V8_ROOT)/src/heap/base/stack.h',
+        ],
+        'conditions': [
+          ['clang or OS!="win"', {
+            'conditions': [
+              ['v8_target_arch=="x64"', {
+                'sources': [
+                  '<(V8_ROOT)/src/heap/base/asm/x64/push_registers_asm.cc',
+                ],
+              }],
+              ['v8_target_arch=="x32"', {
+                'sources': [
+                  '<(V8_ROOT)/src/heap/base/asm/ia32/push_registers_asm.cc',
+                ],
+              }],
+              ['v8_target_arch=="arm"', {
+                'sources': [
+                  '<(V8_ROOT)/src/heap/base/asm/arm/push_registers_asm.cc',
+                ],
+              }],
+              ['v8_target_arch=="arm64"', {
+                'sources': [
+                  '<(V8_ROOT)/src/heap/base/asm/arm64/push_registers_asm.cc',
+                ],
+              }],
+              ['v8_target_arch=="ppc64"', {
+                'sources': [
+                  '<(V8_ROOT)/src/heap/base/asm/ppc/push_registers_asm.cc',
+                ],
+              }],
+              ['v8_target_arch=="s390x"', {
+                'sources': [
+                  '<(V8_ROOT)/src/heap/base/asm/s390/push_registers_asm.cc',
+                ],
+              }],
+              ['v8_target_arch=="mips" or v8_target_arch=="mipsel"', {
+                'sources': [
+                  '<(V8_ROOT)/src/heap/base/asm/mips/push_registers_asm.cc',
+                ],
+              }],
+              ['v8_target_arch=="mips64" or v8_target_arch=="mips64el"', {
+                'sources': [
+                  '<(V8_ROOT)/src/heap/base/asm/mpis64/push_registers_asm.cc',
+                ],
+              }],
+            ]
+          }],
+          ['OS=="win"', {
+            'conditions': [
+              ['v8_target_arch=="x64"', {
+                'sources': [
+                  '<(V8_ROOT)/src/heap/base/asm/x64/push_registers_masm.S',
+                ],
+              }],
+              ['v8_target_arch=="x86"', {
+                'sources': [
+                  '<(V8_ROOT)/src/heap/base/asm/ia32/push_registers_masm.S',
+                ],
+              }],
+              ['v8_target_arch=="arm64"', {
+                'sources': [
+                  '<(V8_ROOT)/src/heap/base/asm/arm64/push_registers_masm.S',
+                ],
+              }],
+            ],
+          }],
+        ],
+      },
+    },  # v8_cppgc_shared
 
     ###############################################################################
     # Public targets
