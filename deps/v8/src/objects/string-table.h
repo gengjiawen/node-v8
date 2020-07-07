@@ -16,7 +16,7 @@ namespace internal {
 
 class StringTableKey {
  public:
-  virtual ~StringTableKey() {}
+  virtual ~StringTableKey() = default;
   inline StringTableKey(uint32_t hash_field, int length);
 
   virtual Handle<String> AsHandle(Isolate* isolate) = 0;
@@ -113,7 +113,7 @@ class StringSet : public HashTable<StringSet, StringSetShape> {
  public:
   V8_EXPORT_PRIVATE static Handle<StringSet> New(Isolate* isolate);
   V8_EXPORT_PRIVATE static Handle<StringSet> Add(Isolate* isolate,
-                                                 Handle<StringSet> blacklist,
+                                                 Handle<StringSet> stringset,
                                                  Handle<String> name);
   V8_EXPORT_PRIVATE bool Has(Isolate* isolate, Handle<String> name);
 

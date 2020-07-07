@@ -56,11 +56,11 @@ static bool CompareInverseRanges(ZoneList<CharacterRange>* ranges,
     return false;
   }
   for (int i = 0; i < length; i += 2) {
-    if (special_class[i] != (range.to() + 1)) {
+    if (static_cast<uc32>(special_class[i]) != (range.to() + 1)) {
       return false;
     }
     range = ranges->at((i >> 1) + 1);
-    if (special_class[i + 1] != range.from()) {
+    if (static_cast<uc32>(special_class[i + 1]) != range.from()) {
       return false;
     }
   }
@@ -79,8 +79,8 @@ static bool CompareRanges(ZoneList<CharacterRange>* ranges,
   }
   for (int i = 0; i < length; i += 2) {
     CharacterRange range = ranges->at(i >> 1);
-    if (range.from() != special_class[i] ||
-        range.to() != special_class[i + 1] - 1) {
+    if (range.from() != static_cast<uc32>(special_class[i]) ||
+        range.to() != static_cast<uc32>(special_class[i + 1] - 1)) {
       return false;
     }
   }
@@ -439,6 +439,8 @@ RegExpNode* RegExpCharacterClass::ToNode(RegExpCompiler* compiler,
       AddNonBmpSurrogatePairs(compiler, result, on_success, &splitter);
       AddLoneLeadSurrogates(compiler, result, on_success, &splitter);
       AddLoneTrailSurrogates(compiler, result, on_success, &splitter);
+      static constexpr int kMaxRangesToInline = 32;  // Arbitrary.
+      if (ranges->length() > kMaxRangesToInline) result->SetDoNotInline();
       return result;
     }
   } else {
@@ -1152,7 +1154,7 @@ void CharacterRange::AddCaseEquivalents(Isolate* isolate, Zone* zone,
     CharacterRange range = ranges->at(i);
     uc32 from = range.from();
     if (from > String::kMaxUtf16CodeUnit) continue;
-    uc32 to = Min(range.to(), String::kMaxUtf16CodeUnit);
+    uc32 to = Min(range.to(), String::kMaxUtf16CodeUnitU);
     // Nothing to be done for surrogates.
     if (from >= kLeadSurrogateStart && to <= kTrailSurrogateEnd) continue;
     if (is_one_byte && !RangeContainsLatin1Equivalents(range)) {
@@ -1195,7 +1197,7 @@ void CharacterRange::AddCaseEquivalents(Isolate* isolate, Zone* zone,
     CharacterRange range = ranges->at(i);
     uc32 bottom = range.from();
     if (bottom > String::kMaxUtf16CodeUnit) continue;
-    uc32 top = Min(range.to(), String::kMaxUtf16CodeUnit);
+    uc32 top = Min(range.to(), String::kMaxUtf16CodeUnitU);
     // Nothing to be done for surrogates.
     if (bottom >= kLeadSurrogateStart && top <= kTrailSurrogateEnd) continue;
     if (is_one_byte && !RangeContainsLatin1Equivalents(range)) {
@@ -1230,7 +1232,7 @@ void CharacterRange::AddCaseEquivalents(Isolate* isolate, Zone* zone,
       // block we do this for all the blocks covered by the range (handling
       // characters that is not in a block as a "singleton block").
       unibrow::uchar equivalents[unibrow::Ecma262UnCanonicalize::kMaxWidth];
-      int pos = bottom;
+      uc32 pos = bottom;
       while (pos <= top) {
         int length =
             isolate->jsregexp_canonrange()->get(pos, '\0', equivalents);
@@ -1263,7 +1265,7 @@ bool CharacterRange::IsCanonical(ZoneList<CharacterRange>* ranges) {
   DCHECK_NOT_NULL(ranges);
   int n = ranges->length();
   if (n <= 1) return true;
-  int max = ranges->at(0).to();
+  uc32 max = ranges->at(0).to();
   for (int i = 1; i < n; i++) {
     CharacterRange next_range = ranges->at(i);
     if (next_range.from() <= max + 1) return false;
@@ -1364,7 +1366,7 @@ void CharacterRange::Canonicalize(ZoneList<CharacterRange>* character_ranges) {
   // Check whether ranges are already canonical (increasing, non-overlapping,
   // non-adjacent).
   int n = character_ranges->length();
-  int max = character_ranges->at(0).to();
+  uc32 max = character_ranges->at(0).to();
   int i = 1;
   while (i < n) {
     CharacterRange current = character_ranges->at(i);

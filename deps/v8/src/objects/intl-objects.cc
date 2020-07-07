@@ -89,9 +89,7 @@ inline constexpr uint16_t ToLatin1Lower(uint16_t ch) {
 
 // Does not work for U+00DF (sharp-s), U+00B5 (micron), U+00FF.
 inline constexpr uint16_t ToLatin1Upper(uint16_t ch) {
-#if V8_HAS_CXX14_CONSTEXPR
-  DCHECK(ch != 0xDF && ch != 0xB5 && ch != 0xFF);
-#endif
+  CONSTEXPR_DCHECK(ch != 0xDF && ch != 0xB5 && ch != 0xFF);
   return ch &
          ~((IsAsciiLower(ch) || (((ch & 0xE0) == 0xE0) && ch != 0xF7)) << 5);
 }
@@ -563,14 +561,12 @@ bool ValidateResource(const icu::Locale locale, const char* path,
 }  // namespace
 
 std::set<std::string> Intl::BuildLocaleSet(
-    const icu::Locale* icu_available_locales, int32_t count, const char* path,
+    const std::vector<std::string>& icu_available_locales, const char* path,
     const char* validate_key) {
   std::set<std::string> locales;
-  for (int32_t i = 0; i < count; ++i) {
-    std::string locale =
-        Intl::ToLanguageTag(icu_available_locales[i]).FromJust();
+  for (const std::string& locale : icu_available_locales) {
     if (path != nullptr || validate_key != nullptr) {
-      if (!ValidateResource(icu_available_locales[i], path, validate_key)) {
+      if (!ValidateResource(icu::Locale(locale.c_str()), path, validate_key)) {
         continue;
       }
     }
@@ -1473,7 +1469,7 @@ class Iterator : public icu::Locale::Iterator {
   Iterator(std::vector<std::string>::const_iterator begin,
            std::vector<std::string>::const_iterator end)
       : iter_(begin), end_(end) {}
-  virtual ~Iterator() {}
+  ~Iterator() override = default;
 
   UBool hasNext() const override { return iter_ != end_; }
 
@@ -1895,8 +1891,8 @@ Maybe<Intl::ResolvedLocale> Intl::ResolveLocale(
 Handle<Managed<icu::UnicodeString>> Intl::SetTextToBreakIterator(
     Isolate* isolate, Handle<String> text, icu::BreakIterator* break_iterator) {
   text = String::Flatten(isolate, text);
-  icu::UnicodeString* u_text =
-      (icu::UnicodeString*)(Intl::ToICUUnicodeString(isolate, text).clone());
+  icu::UnicodeString* u_text = static_cast<icu::UnicodeString*>(
+      Intl::ToICUUnicodeString(isolate, text).clone());
 
   Handle<Managed<icu::UnicodeString>> new_u_text =
       Managed<icu::UnicodeString>::FromRawPtr(isolate, 0, u_text);
@@ -2107,9 +2103,9 @@ Maybe<bool> Intl::GetNumberingSystem(Isolate* isolate,
   return Just(false);
 }
 
-const std::set<std::string>& Intl::GetAvailableLocalesForLocale() {
-  static base::LazyInstance<Intl::AvailableLocales<icu::Locale>>::type
-      available_locales = LAZY_INSTANCE_INITIALIZER;
+const std::set<std::string>& Intl::GetAvailableLocales() {
+  static base::LazyInstance<Intl::AvailableLocales<>>::type available_locales =
+      LAZY_INSTANCE_INITIALIZER;
   return available_locales.Pointer()->Get();
 }
 
@@ -2123,8 +2119,7 @@ struct CheckCalendar {
 }  // namespace
 
 const std::set<std::string>& Intl::GetAvailableLocalesForDateFormat() {
-  static base::LazyInstance<
-      Intl::AvailableLocales<icu::DateFormat, CheckCalendar>>::type
+  static base::LazyInstance<Intl::AvailableLocales<CheckCalendar>>::type
       available_locales = LAZY_INSTANCE_INITIALIZER;
   return available_locales.Pointer()->Get();
 }

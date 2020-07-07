@@ -82,6 +82,7 @@ class BasicBlock;
   V(Word32Equal)                          \
   V(Word32Or)                             \
   V(Word32Sar)                            \
+  V(Word32SarShiftOutZeros)               \
   V(Word32Shl)                            \
   V(Word32Shr)                            \
   V(Word32Xor)                            \
@@ -91,7 +92,10 @@ class BasicBlock;
   V(WordAnd)                              \
   V(WordEqual)                            \
   V(WordSar)                              \
-  V(WordShl)
+  V(WordSarShiftOutZeros)                 \
+  V(WordShl)                              \
+  V(WordShr)                              \
+  V(WordXor)
 
 #define CHECKED_ASSEMBLER_MACH_BINOP_LIST(V) \
   V(Int32AddWithOverflow)                    \
@@ -126,47 +130,6 @@ class BasicBlock;
   V(Zero, Number)
 
 class GraphAssembler;
-
-// Wrapper classes for special node/edge types (effect, control, frame states)
-// that otherwise don't fit into the type system.
-
-class NodeWrapper {
- public:
-  explicit constexpr NodeWrapper(Node* node) : node_(node) {}
-  operator Node*() const { return node_; }
-  Node* operator->() const { return node_; }
-
- private:
-  Node* node_;
-};
-
-class Effect : public NodeWrapper {
- public:
-  explicit constexpr Effect(Node* node) : NodeWrapper(node) {
-    // TODO(jgruber): Remove the End special case.
-    SLOW_DCHECK(node == nullptr || node->op()->opcode() == IrOpcode::kEnd ||
-                node->op()->EffectOutputCount() > 0);
-  }
-};
-
-class Control : public NodeWrapper {
- public:
-  explicit constexpr Control(Node* node) : NodeWrapper(node) {
-    // TODO(jgruber): Remove the End special case.
-    SLOW_DCHECK(node == nullptr || node->opcode() == IrOpcode::kEnd ||
-                node->op()->ControlOutputCount() > 0);
-  }
-};
-
-class FrameState : public NodeWrapper {
- public:
-  explicit constexpr FrameState(Node* node) : NodeWrapper(node) {
-    // TODO(jgruber): Disallow kStart (needed for PromiseConstructorBasic unit
-    // test, among others).
-    SLOW_DCHECK(node->opcode() == IrOpcode::kFrameState ||
-                node->opcode() == IrOpcode::kStart);
-  }
-};
 
 enum class GraphAssemblerLabelType { kDeferred, kNonDeferred, kLoop };
 
@@ -309,6 +272,8 @@ class V8_EXPORT_PRIVATE GraphAssembler {
 
   Node* TypeGuard(Type type, Node* value);
   Node* Checkpoint(FrameState frame_state);
+
+  TNode<RawPtrT> StackSlot(int size, int alignment);
 
   Node* Store(StoreRepresentation rep, Node* object, Node* offset, Node* value);
   Node* Store(StoreRepresentation rep, Node* object, int offset, Node* value);
@@ -579,6 +544,7 @@ void GraphAssembler::MergeState(GraphAssemblerLabel<sizeof...(Vars)>* label,
       label->effect_->ReplaceInput(1, effect());
       for (size_t i = 0; i < kVarCount; i++) {
         label->bindings_[i]->ReplaceInput(1, var_array[i]);
+        CHECK(!NodeProperties::IsTyped(var_array[i]));  // Unsupported.
       }
     }
   } else {
@@ -622,6 +588,13 @@ void GraphAssembler::MergeState(GraphAssemblerLabel<sizeof...(Vars)>* label,
         NodeProperties::ChangeOp(
             label->bindings_[i],
             common()->Phi(label->representations_[i], merged_count + 1));
+        if (NodeProperties::IsTyped(label->bindings_[i])) {
+          CHECK(NodeProperties::IsTyped(var_array[i]));
+          Type old_type = NodeProperties::GetType(label->bindings_[i]);
+          Type new_type = Type::Union(
+              old_type, NodeProperties::GetType(var_array[i]), graph()->zone());
+          NodeProperties::SetType(label->bindings_[i], new_type);
+        }
       }
     }
   }
@@ -822,6 +795,7 @@ class V8_EXPORT_PRIVATE JSGraphAssembler : public GraphAssembler {
   TNode<String> StringSubstring(TNode<String> string, TNode<Number> from,
                                 TNode<Number> to);
   TNode<Boolean> ObjectIsCallable(TNode<Object> value);
+  TNode<Boolean> ObjectIsUndetectable(TNode<Object> value);
   Node* CheckIf(Node* cond, DeoptimizeReason reason);
   TNode<Boolean> NumberIsFloat64Hole(TNode<Number> value);
   TNode<Boolean> ToBoolean(TNode<Object> value);

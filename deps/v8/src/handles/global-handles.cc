@@ -381,10 +381,11 @@ namespace {
 
 void ExtractInternalFields(JSObject jsobject, void** embedder_fields, int len) {
   int field_count = jsobject.GetEmbedderFieldCount();
+  const Isolate* isolate = GetIsolateForPtrCompr(jsobject);
   for (int i = 0; i < len; ++i) {
     if (field_count == i) break;
     void* pointer;
-    if (EmbedderDataSlot(jsobject, i).ToAlignedPointer(&pointer)) {
+    if (EmbedderDataSlot(jsobject, i).ToAlignedPointer(isolate, &pointer)) {
       embedder_fields[i] = pointer;
     }
   }
@@ -574,7 +575,7 @@ class GlobalHandles::Node final : public NodeBase<GlobalHandles::Node> {
 
   void PostGarbageCollectionProcessing(Isolate* isolate) {
     // This method invokes a finalizer. Updating the method name would require
-    // adjusting CFI blacklist as weak_callback_ is invoked on the wrong type.
+    // adjusting CFI blocklist as weak_callback_ is invoked on the wrong type.
     CHECK(IsPendingFinalizer());
     set_state(NEAR_DEATH);
     // Check that we are not passing a finalized external string to

@@ -17,6 +17,7 @@
 #include "src/heap/marking-visitor-inl.h"
 #include "src/heap/marking-visitor.h"
 #include "src/heap/marking.h"
+#include "src/heap/memory-chunk.h"
 #include "src/heap/memory-measurement-inl.h"
 #include "src/heap/memory-measurement.h"
 #include "src/heap/objects-visiting-inl.h"
@@ -40,10 +41,10 @@ class ConcurrentMarkingState final
   explicit ConcurrentMarkingState(MemoryChunkDataMap* memory_chunk_data)
       : memory_chunk_data_(memory_chunk_data) {}
 
-  ConcurrentBitmap<AccessMode::ATOMIC>* bitmap(const MemoryChunk* chunk) {
+  ConcurrentBitmap<AccessMode::ATOMIC>* bitmap(const BasicMemoryChunk* chunk) {
     DCHECK_EQ(reinterpret_cast<intptr_t>(&chunk->marking_bitmap_) -
                   reinterpret_cast<intptr_t>(chunk),
-              MemoryChunk::kMarkBitmapOffset);
+              BasicMemoryChunk::kMarkBitmapOffset);
     return chunk->marking_bitmap<AccessMode::ATOMIC>();
   }
 
@@ -297,7 +298,7 @@ class ConcurrentMarkingVisitor final
 #ifdef THREAD_SANITIZER
     // This is needed because TSAN does not process the memory fence
     // emitted after page initialization.
-    MemoryChunk::FromHeapObject(heap_object)->SynchronizedHeapLoad();
+    BasicMemoryChunk::FromHeapObject(heap_object)->SynchronizedHeapLoad();
 #endif
   }
 
@@ -526,6 +527,10 @@ void ConcurrentMarking::ScheduleTasks() {
     // thread.
     total_task_count_ = Max(1, Min(kMaxTasks, num_cores - 2));
 #endif  // defined(OS_MACOSX)
+    if (FLAG_gc_experiment_reduce_concurrent_marking_tasks) {
+      // Use at most half of the cores in the experiment.
+      total_task_count_ = Max(1, Min(kMaxTasks, (num_cores / 2) - 1));
+    }
     DCHECK_LE(total_task_count_, kMaxTasks);
     // One task is for the main thread.
     STATIC_ASSERT(kMaxTasks + 1 <= MarkingWorklist::kMaxNumTasks);

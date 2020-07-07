@@ -77,6 +77,10 @@ inline Address StackFrame::callee_pc() const {
 
 inline Address StackFrame::pc() const { return ReadPC(pc_address()); }
 
+inline Address StackFrame::unauthenticated_pc() const {
+  return PointerAuthentication::StripPAC(*pc_address());
+}
+
 inline Address StackFrame::ReadPC(Address* pc_address) {
   return PointerAuthentication::AuthenticatePC(pc_address, kSystemPointerSize);
 }
@@ -236,15 +240,11 @@ inline ArgumentsAdaptorFrame::ArgumentsAdaptorFrame(
 inline BuiltinFrame::BuiltinFrame(StackFrameIteratorBase* iterator)
     : JavaScriptFrame(iterator) {}
 
-inline WasmCompiledFrame::WasmCompiledFrame(StackFrameIteratorBase* iterator)
+inline WasmFrame::WasmFrame(StackFrameIteratorBase* iterator)
     : StandardFrame(iterator) {}
 
 inline WasmExitFrame::WasmExitFrame(StackFrameIteratorBase* iterator)
-    : WasmCompiledFrame(iterator) {}
-
-inline WasmInterpreterEntryFrame::WasmInterpreterEntryFrame(
-    StackFrameIteratorBase* iterator)
-    : StandardFrame(iterator) {}
+    : WasmFrame(iterator) {}
 
 inline WasmDebugBreakFrame::WasmDebugBreakFrame(
     StackFrameIteratorBase* iterator)

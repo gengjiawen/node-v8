@@ -42,8 +42,9 @@ class CompilationCacheShape : public BaseShape<HashTableKey*> {
 
 class InfoCellPair {
  public:
-  InfoCellPair() {}
-  inline InfoCellPair(SharedFunctionInfo shared, FeedbackCell feedback_cell);
+  InfoCellPair() = default;
+  inline InfoCellPair(Isolate* isolate, SharedFunctionInfo shared,
+                      FeedbackCell feedback_cell);
 
   FeedbackCell feedback_cell() const {
     DCHECK(is_compiled_scope_.is_compiled());

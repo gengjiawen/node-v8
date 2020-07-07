@@ -16,7 +16,7 @@
 #include "src/codegen/register-configuration.h"
 #include "src/debug/debug.h"
 #include "src/execution/frames-inl.h"
-#include "src/heap/heap-inl.h"  // For MemoryChunk.
+#include "src/heap/memory-chunk.h"
 #include "src/init/bootstrapper.h"
 #include "src/logging/counters.h"
 #include "src/objects/smi.h"
@@ -1349,7 +1349,7 @@ void MacroAssembler::InvokePrologue(Register expected_parameter_count,
 
   // The code below is made a lot easier because the calling code already sets
   // up actual and expected registers according to the contract.
-  // ARM has some sanity checks as per below, considering add them for S390
+  // ARM has some checks as per below, considering add them for S390
   DCHECK_EQ(actual_parameter_count, r2);
   DCHECK_EQ(expected_parameter_count, r4);
 
@@ -2024,10 +2024,10 @@ void TurboAssembler::CheckPageFlag(
     // Reverse the byte_offset if emulating on little endian platform
     byte_offset = kSystemPointerSize - byte_offset - 1;
 #endif
-    tm(MemOperand(scratch, MemoryChunk::kFlagsOffset + byte_offset),
+    tm(MemOperand(scratch, BasicMemoryChunk::kFlagsOffset + byte_offset),
        Operand(shifted_mask));
   } else {
-    LoadP(scratch, MemOperand(scratch, MemoryChunk::kFlagsOffset));
+    LoadP(scratch, MemOperand(scratch, BasicMemoryChunk::kFlagsOffset));
     AndP(r0, scratch, Operand(mask));
   }
   // Should be okay to remove rc

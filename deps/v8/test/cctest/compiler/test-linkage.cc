@@ -26,6 +26,8 @@ namespace compiler {
 static Operator dummy_operator(IrOpcode::kParameter, Operator::kNoWrite,
                                "dummy", 0, 0, 0, 0, 0, 0);
 
+static constexpr bool kNativeContextDependent = false;
+
 // So we can get a real JS function.
 static Handle<JSFunction> Compile(const char* source) {
   Isolate* isolate = CcTest::i_isolate();
@@ -49,7 +51,7 @@ TEST(TestLinkageCreate) {
   Handle<JSFunction> function = Compile("a + b");
   Handle<SharedFunctionInfo> shared(function->shared(), handles.main_isolate());
   OptimizedCompilationInfo info(handles.main_zone(), function->GetIsolate(),
-                                shared, function);
+                                shared, function, kNativeContextDependent);
   auto call_descriptor = Linkage::ComputeIncoming(info.zone(), &info);
   CHECK(call_descriptor);
 }
@@ -67,7 +69,7 @@ TEST(TestLinkageJSFunctionIncoming) {
     Handle<SharedFunctionInfo> shared(function->shared(),
                                       handles.main_isolate());
     OptimizedCompilationInfo info(handles.main_zone(), function->GetIsolate(),
-                                  shared, function);
+                                  shared, function, kNativeContextDependent);
     auto call_descriptor = Linkage::ComputeIncoming(info.zone(), &info);
     CHECK(call_descriptor);
 
@@ -84,7 +86,7 @@ TEST(TestLinkageJSCall) {
   Handle<JSFunction> function = Compile("a + c");
   Handle<SharedFunctionInfo> shared(function->shared(), handles.main_isolate());
   OptimizedCompilationInfo info(handles.main_zone(), function->GetIsolate(),
-                                shared, function);
+                                shared, function, kNativeContextDependent);
 
   for (int i = 0; i < 32; i++) {
     auto call_descriptor = Linkage::GetJSCallDescriptor(
@@ -104,6 +106,7 @@ TEST(TestLinkageRuntimeCall) {
 
 
 TEST(TestLinkageStubCall) {
+  // TODO(bbudge) Add tests for FP registers.
   Isolate* isolate = CcTest::InitIsolateOnce();
   Zone zone(isolate->allocator(), ZONE_NAME);
   Callable callable = Builtins::CallableFor(isolate, Builtins::kToNumber);
@@ -116,7 +119,34 @@ TEST(TestLinkageStubCall) {
   CHECK_EQ(1, static_cast<int>(call_descriptor->ReturnCount()));
   CHECK_EQ(Operator::kNoProperties, call_descriptor->properties());
   CHECK_EQ(false, call_descriptor->IsJSFunctionCall());
+
+  CHECK_EQ(call_descriptor->GetParameterType(0), MachineType::AnyTagged());
+  CHECK_EQ(call_descriptor->GetReturnType(0), MachineType::AnyTagged());
   // TODO(titzer): test linkage creation for outgoing stub calls.
+}
+
+TEST(TestFPLinkageStubCall) {
+  Isolate* isolate = CcTest::InitIsolateOnce();
+  Zone zone(isolate->allocator(), ZONE_NAME);
+  Callable callable =
+      Builtins::CallableFor(isolate, Builtins::kWasmFloat64ToNumber);
+  OptimizedCompilationInfo info(ArrayVector("test"), &zone, Code::STUB);
+  auto call_descriptor = Linkage::GetStubCallDescriptor(
+      &zone, callable.descriptor(), 0, CallDescriptor::kNoFlags,
+      Operator::kNoProperties);
+  CHECK(call_descriptor);
+  CHECK_EQ(0, static_cast<int>(call_descriptor->StackParameterCount()));
+  CHECK_EQ(1, static_cast<int>(call_descriptor->ParameterCount()));
+  CHECK_EQ(1, static_cast<int>(call_descriptor->ReturnCount()));
+  CHECK_EQ(Operator::kNoProperties, call_descriptor->properties());
+  CHECK_EQ(false, call_descriptor->IsJSFunctionCall());
+
+  CHECK_EQ(call_descriptor->GetInputType(1), MachineType::Float64());
+  CHECK(call_descriptor->GetInputLocation(1).IsRegister());
+  CHECK_EQ(call_descriptor->GetReturnType(0), MachineType::AnyTagged());
+  CHECK(call_descriptor->GetReturnLocation(0).IsRegister());
+  CHECK_EQ(call_descriptor->GetReturnLocation(0).GetLocation(),
+           kReturnRegister0.code());
 }
 
 }  // namespace compiler

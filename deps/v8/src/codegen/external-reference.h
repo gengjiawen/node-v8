@@ -77,8 +77,10 @@ class StatsCounter;
   V(address_of_regexp_stack_memory_top_address,                                \
     "RegExpStack::memory_top_address_address()")                               \
   V(address_of_static_offsets_vector, "OffsetsVector::static_offsets_vector")  \
-  V(re_case_insensitive_compare_uc16,                                          \
-    "NativeRegExpMacroAssembler::CaseInsensitiveCompareUC16()")                \
+  V(re_case_insensitive_compare_unicode,                                       \
+    "NativeRegExpMacroAssembler::CaseInsensitiveCompareUnicode()")             \
+  V(re_case_insensitive_compare_non_unicode,                                   \
+    "NativeRegExpMacroAssembler::CaseInsensitiveCompareNonUnicode()")          \
   V(re_check_stack_guard_state,                                                \
     "RegExpMacroAssembler*::CheckStackGuardState()")                           \
   V(re_grow_stack, "NativeRegExpMacroAssembler::GrowStack()")                  \
@@ -96,6 +98,8 @@ class StatsCounter;
     "FLAG_mock_arraybuffer_allocator")                                        \
   V(address_of_one_half, "LDoubleConstant::one_half")                         \
   V(address_of_runtime_stats_flag, "TracingFlags::runtime_stats")             \
+  V(address_of_load_from_stack_count, "load_from_stack_count")                \
+  V(address_of_store_to_stack_count, "store_to_stack_count")                  \
   V(address_of_the_hole_nan, "the_hole_nan")                                  \
   V(address_of_uint32_bias, "uint32_bias")                                    \
   V(bytecode_size_table_address, "Bytecodes::bytecode_size_table_address")    \
@@ -181,9 +185,13 @@ class StatsCounter;
   V(wasm_f64_trunc, "wasm::f64_trunc_wrapper")                                \
   V(wasm_float32_to_int64, "wasm::float32_to_int64_wrapper")                  \
   V(wasm_float32_to_uint64, "wasm::float32_to_uint64_wrapper")                \
+  V(wasm_float32_to_int64_sat, "wasm::float32_to_int64_sat_wrapper")          \
+  V(wasm_float32_to_uint64_sat, "wasm::float32_to_uint64_sat_wrapper")        \
   V(wasm_float64_pow, "wasm::float64_pow")                                    \
   V(wasm_float64_to_int64, "wasm::float64_to_int64_wrapper")                  \
   V(wasm_float64_to_uint64, "wasm::float64_to_uint64_wrapper")                \
+  V(wasm_float64_to_int64_sat, "wasm::float64_to_int64_sat_wrapper")          \
+  V(wasm_float64_to_uint64_sat, "wasm::float64_to_uint64_sat_wrapper")        \
   V(wasm_int64_div, "wasm::int64_div")                                        \
   V(wasm_int64_mod, "wasm::int64_mod")                                        \
   V(wasm_int64_to_float32, "wasm::int64_to_float32_wrapper")                  \
@@ -200,6 +208,14 @@ class StatsCounter;
   V(wasm_word64_ror, "wasm::word64_ror")                                      \
   V(wasm_word64_ctz, "wasm::word64_ctz")                                      \
   V(wasm_word64_popcnt, "wasm::word64_popcnt")                                \
+  V(wasm_f64x2_ceil, "wasm::f64x2_ceil_wrapper")                              \
+  V(wasm_f64x2_floor, "wasm::f64x2_floor_wrapper")                            \
+  V(wasm_f64x2_trunc, "wasm::f64x2_trunc_wrapper")                            \
+  V(wasm_f64x2_nearest_int, "wasm::f64x2_nearest_int_wrapper")                \
+  V(wasm_f32x4_ceil, "wasm::f32x4_ceil_wrapper")                              \
+  V(wasm_f32x4_floor, "wasm::f32x4_floor_wrapper")                            \
+  V(wasm_f32x4_trunc, "wasm::f32x4_trunc_wrapper")                            \
+  V(wasm_f32x4_nearest_int, "wasm::f32x4_nearest_int_wrapper")                \
   V(wasm_memory_init, "wasm::memory_init")                                    \
   V(wasm_memory_copy, "wasm::memory_copy")                                    \
   V(wasm_memory_fill, "wasm::memory_fill")                                    \
@@ -215,6 +231,8 @@ class StatsCounter;
   V(atomic_pair_exchange_function, "atomic_pair_exchange_function")           \
   V(atomic_pair_compare_exchange_function,                                    \
     "atomic_pair_compare_exchange_function")                                  \
+  V(js_finalization_registry_remove_cell_from_unregister_token_map,           \
+    "JSFinalizationRegistry::RemoveCellFromUnregisterTokenMap")               \
   EXTERNAL_REFERENCE_LIST_INTL(V)
 
 #ifdef V8_INTL_SUPPORT

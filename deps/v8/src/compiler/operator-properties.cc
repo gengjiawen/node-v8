@@ -24,7 +24,7 @@ bool OperatorProperties::NeedsExactContext(const Operator* op) {
   DCHECK(HasContextInput(op));
   IrOpcode::Value const opcode = static_cast<IrOpcode::Value>(op->opcode());
   switch (opcode) {
-#define CASE(Name) case IrOpcode::k##Name:
+#define CASE(Name, ...) case IrOpcode::k##Name:
     // Binary/unary operators, calls and constructor calls only
     // need the context to generate exceptions or lookup fields
     // on the native context, so passing any context is fine.
@@ -53,7 +53,6 @@ bool OperatorProperties::NeedsExactContext(const Operator* op) {
     case IrOpcode::kJSLoadGlobal:
     case IrOpcode::kJSLoadMessage:
     case IrOpcode::kJSStackCheck:
-    case IrOpcode::kJSStoreGlobal:
     case IrOpcode::kJSStoreMessage:
     case IrOpcode::kJSGetIterator:
       return false;
@@ -83,6 +82,7 @@ bool OperatorProperties::NeedsExactContext(const Operator* op) {
     case IrOpcode::kJSLoadProperty:
     case IrOpcode::kJSStoreContext:
     case IrOpcode::kJSStoreDataPropertyInLiteral:
+    case IrOpcode::kJSStoreGlobal:
     case IrOpcode::kJSStoreInArrayLiteral:
     case IrOpcode::kJSStoreModule:
     case IrOpcode::kJSStoreNamed:

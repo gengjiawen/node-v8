@@ -217,16 +217,17 @@ void Node::InsertInputs(Zone* zone, int index, int count) {
   Verify();
 }
 
-void Node::RemoveInput(int index) {
+Node* Node::RemoveInput(int index) {
   DCHECK_LE(0, index);
   DCHECK_LT(index, InputCount());
+  Node* result = InputAt(index);
   for (; index < InputCount() - 1; ++index) {
     ReplaceInput(index, InputAt(index + 1));
   }
   TrimInputCount(InputCount() - 1);
   Verify();
+  return result;
 }
-
 
 void Node::ClearInputs(int start, int count) {
   Node** input_ptr = GetInputPtr(start);
@@ -258,6 +259,19 @@ void Node::TrimInputCount(int new_input_count) {
   }
 }
 
+void Node::EnsureInputCount(Zone* zone, int new_input_count) {
+  int current_count = InputCount();
+  DCHECK_NE(current_count, 0);
+  if (current_count > new_input_count) {
+    TrimInputCount(new_input_count);
+  } else if (current_count < new_input_count) {
+    Node* dummy = InputAt(current_count - 1);
+    do {
+      AppendInput(zone, dummy);
+      current_count++;
+    } while (current_count < new_input_count);
+  }
+}
 
 int Node::UseCount() const {
   int use_count = 0;
@@ -314,22 +328,32 @@ bool Node::OwnedBy(Node const* owner1, Node const* owner2) const {
   return mask == 3;
 }
 
-void Node::Print() const {
+void Node::Print(int depth) const {
   StdoutStream os;
-  Print(os);
+  Print(os, depth);
 }
 
-void Node::Print(std::ostream& os) const {
-  os << *this << std::endl;
-  for (Node* input : this->inputs()) {
+namespace {
+void PrintNode(const Node* node, std::ostream& os, int depth,
+               int indentation = 0) {
+  for (int i = 0; i < indentation; ++i) {
     os << "  ";
-    if (input) {
-      os << *input;
-    } else {
-      os << "(NULL)";
-    }
-    os << std::endl;
   }
+  if (node) {
+    os << *node;
+  } else {
+    os << "(NULL)";
+  }
+  os << std::endl;
+  if (depth <= 0) return;
+  for (Node* input : node->inputs()) {
+    PrintNode(input, os, depth - 1, indentation + 1);
+  }
+}
+}  // namespace
+
+void Node::Print(std::ostream& os, int depth) const {
+  PrintNode(this, os, depth);
 }
 
 std::ostream& operator<<(std::ostream& os, const Node& n) {
@@ -392,7 +416,7 @@ void Node::RemoveUse(Use* use) {
 
 #if DEBUG
 void Node::Verify() {
-  // Check basic sanity of input data structures.
+  // Check basic validity of input data structures.
   fflush(stdout);
   int count = this->InputCount();
   // Avoid quadratic explosion for mega nodes; only verify if the input

@@ -7,7 +7,7 @@
 #include <limits>
 
 #include "src/base/lazy-instance.h"
-#include "src/compiler/opcodes.h"
+#include "src/compiler/js-graph.h"
 #include "src/compiler/operator.h"
 #include "src/handles/handles-inl.h"
 #include "src/objects/objects-inl.h"
@@ -17,14 +17,28 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
+namespace {
+
+// Returns properties for the given binary op.
+constexpr Operator::Properties BinopProperties(Operator::Opcode opcode) {
+  CONSTEXPR_DCHECK(JSOperator::IsBinaryWithFeedback(opcode));
+  return opcode == IrOpcode::kJSStrictEqual ? Operator::kPure
+                                            : Operator::kNoProperties;
+}
+
+}  // namespace
+
+namespace js_node_wrapper_utils {
+
+TNode<Oddball> UndefinedConstant(JSGraph* jsgraph) {
+  return TNode<Oddball>::UncheckedCast(jsgraph->UndefinedConstant());
+}
+
+}  // namespace js_node_wrapper_utils
+
 std::ostream& operator<<(std::ostream& os, CallFrequency const& f) {
   if (f.IsUnknown()) return os << "unknown";
   return os << f.value();
-}
-
-CallFrequency CallFrequencyOf(Operator const* op) {
-  DCHECK_EQ(op->opcode(), IrOpcode::kJSConstructWithArrayLike);
-  return OpParameter<CallFrequency>(op);
 }
 
 std::ostream& operator<<(std::ostream& os,
@@ -60,6 +74,7 @@ std::ostream& operator<<(std::ostream& os, ConstructParameters const& p) {
 
 ConstructParameters const& ConstructParametersOf(Operator const* op) {
   DCHECK(op->opcode() == IrOpcode::kJSConstruct ||
+         op->opcode() == IrOpcode::kJSConstructWithArrayLike ||
          op->opcode() == IrOpcode::kJSConstructWithSpread);
   return OpParameter<ConstructParameters>(op);
 }
@@ -230,7 +245,9 @@ std::ostream& operator<<(std::ostream& os, FeedbackParameter const& p) {
 }
 
 FeedbackParameter const& FeedbackParameterOf(const Operator* op) {
-  DCHECK(op->opcode() == IrOpcode::kJSCreateEmptyLiteralArray ||
+  DCHECK(JSOperator::IsUnaryWithFeedback(op->opcode()) ||
+         JSOperator::IsBinaryWithFeedback(op->opcode()) ||
+         op->opcode() == IrOpcode::kJSCreateEmptyLiteralArray ||
          op->opcode() == IrOpcode::kJSInstanceOf ||
          op->opcode() == IrOpcode::kJSStoreDataPropertyInLiteral ||
          op->opcode() == IrOpcode::kJSStoreInArrayLiteral);
@@ -636,37 +653,7 @@ ForInMode ForInModeOf(Operator const* op) {
   return OpParameter<ForInMode>(op);
 }
 
-BinaryOperationHint BinaryOperationHintOf(const Operator* op) {
-  DCHECK_EQ(IrOpcode::kJSAdd, op->opcode());
-  return OpParameter<BinaryOperationHint>(op);
-}
-
-CompareOperationHint CompareOperationHintOf(const Operator* op) {
-  DCHECK(op->opcode() == IrOpcode::kJSEqual ||
-         op->opcode() == IrOpcode::kJSStrictEqual ||
-         op->opcode() == IrOpcode::kJSLessThan ||
-         op->opcode() == IrOpcode::kJSGreaterThan ||
-         op->opcode() == IrOpcode::kJSLessThanOrEqual ||
-         op->opcode() == IrOpcode::kJSGreaterThanOrEqual);
-  return OpParameter<CompareOperationHint>(op);
-}
-
 #define CACHED_OP_LIST(V)                                                \
-  V(BitwiseOr, Operator::kNoProperties, 2, 1)                            \
-  V(BitwiseXor, Operator::kNoProperties, 2, 1)                           \
-  V(BitwiseAnd, Operator::kNoProperties, 2, 1)                           \
-  V(ShiftLeft, Operator::kNoProperties, 2, 1)                            \
-  V(ShiftRight, Operator::kNoProperties, 2, 1)                           \
-  V(ShiftRightLogical, Operator::kNoProperties, 2, 1)                    \
-  V(Subtract, Operator::kNoProperties, 2, 1)                             \
-  V(Multiply, Operator::kNoProperties, 2, 1)                             \
-  V(Divide, Operator::kNoProperties, 2, 1)                               \
-  V(Modulus, Operator::kNoProperties, 2, 1)                              \
-  V(Exponentiate, Operator::kNoProperties, 2, 1)                         \
-  V(BitwiseNot, Operator::kNoProperties, 1, 1)                           \
-  V(Decrement, Operator::kNoProperties, 1, 1)                            \
-  V(Increment, Operator::kNoProperties, 1, 1)                            \
-  V(Negate, Operator::kNoProperties, 1, 1)                               \
   V(ToLength, Operator::kNoProperties, 1, 1)                             \
   V(ToName, Operator::kNoProperties, 1, 1)                               \
   V(ToNumber, Operator::kNoProperties, 1, 1)                             \
@@ -703,16 +690,6 @@ CompareOperationHint CompareOperationHintOf(const Operator* op) {
   V(ParseInt, Operator::kNoProperties, 2, 1)                             \
   V(RegExpTest, Operator::kNoProperties, 2, 1)
 
-#define BINARY_OP_LIST(V) V(Add)
-
-#define COMPARE_OP_LIST(V)                    \
-  V(Equal, Operator::kNoProperties)           \
-  V(StrictEqual, Operator::kPure)             \
-  V(LessThan, Operator::kNoProperties)        \
-  V(GreaterThan, Operator::kNoProperties)     \
-  V(LessThanOrEqual, Operator::kNoProperties) \
-  V(GreaterThanOrEqual, Operator::kNoProperties)
-
 struct JSOperatorGlobalCache final {
 #define CACHED_OP(Name, properties, value_input_count, value_output_count) \
   struct Name##Operator final : public Operator {                          \
@@ -726,55 +703,6 @@ struct JSOperatorGlobalCache final {
   Name##Operator k##Name##Operator;
   CACHED_OP_LIST(CACHED_OP)
 #undef CACHED_OP
-
-#define BINARY_OP(Name)                                                       \
-  template <BinaryOperationHint kHint>                                        \
-  struct Name##Operator final : public Operator1<BinaryOperationHint> {       \
-    Name##Operator()                                                          \
-        : Operator1<BinaryOperationHint>(IrOpcode::kJS##Name,                 \
-                                         Operator::kNoProperties, "JS" #Name, \
-                                         2, 1, 1, 1, 1, 2, kHint) {}          \
-  };                                                                          \
-  Name##Operator<BinaryOperationHint::kNone> k##Name##NoneOperator;           \
-  Name##Operator<BinaryOperationHint::kSignedSmall>                           \
-      k##Name##SignedSmallOperator;                                           \
-  Name##Operator<BinaryOperationHint::kSignedSmallInputs>                     \
-      k##Name##SignedSmallInputsOperator;                                     \
-  Name##Operator<BinaryOperationHint::kSigned32> k##Name##Signed32Operator;   \
-  Name##Operator<BinaryOperationHint::kNumber> k##Name##NumberOperator;       \
-  Name##Operator<BinaryOperationHint::kNumberOrOddball>                       \
-      k##Name##NumberOrOddballOperator;                                       \
-  Name##Operator<BinaryOperationHint::kString> k##Name##StringOperator;       \
-  Name##Operator<BinaryOperationHint::kBigInt> k##Name##BigIntOperator;       \
-  Name##Operator<BinaryOperationHint::kAny> k##Name##AnyOperator;
-  BINARY_OP_LIST(BINARY_OP)
-#undef BINARY_OP
-
-#define COMPARE_OP(Name, properties)                                         \
-  template <CompareOperationHint kHint>                                      \
-  struct Name##Operator final : public Operator1<CompareOperationHint> {     \
-    Name##Operator()                                                         \
-        : Operator1<CompareOperationHint>(                                   \
-              IrOpcode::kJS##Name, properties, "JS" #Name, 2, 1, 1, 1, 1,    \
-              Operator::ZeroIfNoThrow(properties), kHint) {}                 \
-  };                                                                         \
-  Name##Operator<CompareOperationHint::kNone> k##Name##NoneOperator;         \
-  Name##Operator<CompareOperationHint::kSignedSmall>                         \
-      k##Name##SignedSmallOperator;                                          \
-  Name##Operator<CompareOperationHint::kNumber> k##Name##NumberOperator;     \
-  Name##Operator<CompareOperationHint::kNumberOrOddball>                     \
-      k##Name##NumberOrOddballOperator;                                      \
-  Name##Operator<CompareOperationHint::kInternalizedString>                  \
-      k##Name##InternalizedStringOperator;                                   \
-  Name##Operator<CompareOperationHint::kString> k##Name##StringOperator;     \
-  Name##Operator<CompareOperationHint::kSymbol> k##Name##SymbolOperator;     \
-  Name##Operator<CompareOperationHint::kBigInt> k##Name##BigIntOperator;     \
-  Name##Operator<CompareOperationHint::kReceiver> k##Name##ReceiverOperator; \
-  Name##Operator<CompareOperationHint::kReceiverOrNullOrUndefined>           \
-      k##Name##ReceiverOrNullOrUndefinedOperator;                            \
-  Name##Operator<CompareOperationHint::kAny> k##Name##AnyOperator;
-  COMPARE_OP_LIST(COMPARE_OP)
-#undef COMPARE_OP
 };
 
 namespace {
@@ -791,85 +719,58 @@ JSOperatorBuilder::JSOperatorBuilder(Zone* zone)
 CACHED_OP_LIST(CACHED_OP)
 #undef CACHED_OP
 
-#define BINARY_OP(Name)                                               \
-  const Operator* JSOperatorBuilder::Name(BinaryOperationHint hint) { \
-    switch (hint) {                                                   \
-      case BinaryOperationHint::kNone:                                \
-        return &cache_.k##Name##NoneOperator;                         \
-      case BinaryOperationHint::kSignedSmall:                         \
-        return &cache_.k##Name##SignedSmallOperator;                  \
-      case BinaryOperationHint::kSignedSmallInputs:                   \
-        return &cache_.k##Name##SignedSmallInputsOperator;            \
-      case BinaryOperationHint::kSigned32:                            \
-        return &cache_.k##Name##Signed32Operator;                     \
-      case BinaryOperationHint::kNumber:                              \
-        return &cache_.k##Name##NumberOperator;                       \
-      case BinaryOperationHint::kNumberOrOddball:                     \
-        return &cache_.k##Name##NumberOrOddballOperator;              \
-      case BinaryOperationHint::kString:                              \
-        return &cache_.k##Name##StringOperator;                       \
-      case BinaryOperationHint::kBigInt:                              \
-        return &cache_.k##Name##BigIntOperator;                       \
-      case BinaryOperationHint::kAny:                                 \
-        return &cache_.k##Name##AnyOperator;                          \
-    }                                                                 \
-    UNREACHABLE();                                                    \
-    return nullptr;                                                   \
+#define UNARY_OP(JSName, Name)                                                \
+  const Operator* JSOperatorBuilder::Name(FeedbackSource const& feedback) {   \
+    FeedbackParameter parameters(feedback);                                   \
+    return new (zone()) Operator1<FeedbackParameter>(                         \
+        IrOpcode::k##JSName, Operator::kNoProperties, #JSName, 2, 1, 1, 1, 1, \
+        2, parameters);                                                       \
   }
-BINARY_OP_LIST(BINARY_OP)
-#undef BINARY_OP
+JS_UNOP_WITH_FEEDBACK(UNARY_OP)
+#undef UNARY_OP
 
-#define COMPARE_OP(Name, ...)                                          \
-  const Operator* JSOperatorBuilder::Name(CompareOperationHint hint) { \
-    switch (hint) {                                                    \
-      case CompareOperationHint::kNone:                                \
-        return &cache_.k##Name##NoneOperator;                          \
-      case CompareOperationHint::kSignedSmall:                         \
-        return &cache_.k##Name##SignedSmallOperator;                   \
-      case CompareOperationHint::kNumber:                              \
-        return &cache_.k##Name##NumberOperator;                        \
-      case CompareOperationHint::kNumberOrOddball:                     \
-        return &cache_.k##Name##NumberOrOddballOperator;               \
-      case CompareOperationHint::kInternalizedString:                  \
-        return &cache_.k##Name##InternalizedStringOperator;            \
-      case CompareOperationHint::kString:                              \
-        return &cache_.k##Name##StringOperator;                        \
-      case CompareOperationHint::kSymbol:                              \
-        return &cache_.k##Name##SymbolOperator;                        \
-      case CompareOperationHint::kBigInt:                              \
-        return &cache_.k##Name##BigIntOperator;                        \
-      case CompareOperationHint::kReceiver:                            \
-        return &cache_.k##Name##ReceiverOperator;                      \
-      case CompareOperationHint::kReceiverOrNullOrUndefined:           \
-        return &cache_.k##Name##ReceiverOrNullOrUndefinedOperator;     \
-      case CompareOperationHint::kAny:                                 \
-        return &cache_.k##Name##AnyOperator;                           \
-    }                                                                  \
-    UNREACHABLE();                                                     \
-    return nullptr;                                                    \
+#define BINARY_OP(JSName, Name)                                               \
+  const Operator* JSOperatorBuilder::Name(FeedbackSource const& feedback) {   \
+    static constexpr auto kProperties = BinopProperties(IrOpcode::k##JSName); \
+    FeedbackParameter parameters(feedback);                                   \
+    return new (zone()) Operator1<FeedbackParameter>(                         \
+        IrOpcode::k##JSName, kProperties, #JSName, 3, 1, 1, 1, 1,             \
+        Operator::ZeroIfNoThrow(kProperties), parameters);                    \
   }
-COMPARE_OP_LIST(COMPARE_OP)
-#undef COMPARE_OP
+JS_BINOP_WITH_FEEDBACK(BINARY_OP)
+#undef BINARY_OP
 
 const Operator* JSOperatorBuilder::StoreDataPropertyInLiteral(
     const FeedbackSource& feedback) {
+  static constexpr int kObject = 1;
+  static constexpr int kName = 1;
+  static constexpr int kValue = 1;
+  static constexpr int kFlags = 1;
+  static constexpr int kFeedbackVector = 1;
+  static constexpr int kArity =
+      kObject + kName + kValue + kFlags + kFeedbackVector;
   FeedbackParameter parameters(feedback);
   return new (zone()) Operator1<FeedbackParameter>(  // --
       IrOpcode::kJSStoreDataPropertyInLiteral,
       Operator::kNoThrow,              // opcode
       "JSStoreDataPropertyInLiteral",  // name
-      4, 1, 1, 0, 1, 1,                // counts
+      kArity, 1, 1, 0, 1, 1,           // counts
       parameters);                     // parameter
 }
 
 const Operator* JSOperatorBuilder::StoreInArrayLiteral(
     const FeedbackSource& feedback) {
+  static constexpr int kArray = 1;
+  static constexpr int kIndex = 1;
+  static constexpr int kValue = 1;
+  static constexpr int kFeedbackVector = 1;
+  static constexpr int kArity = kArray + kIndex + kValue + kFeedbackVector;
   FeedbackParameter parameters(feedback);
   return new (zone()) Operator1<FeedbackParameter>(  // --
       IrOpcode::kJSStoreInArrayLiteral,
       Operator::kNoThrow,       // opcode
       "JSStoreInArrayLiteral",  // name
-      3, 1, 1, 0, 1, 1,         // counts
+      kArity, 1, 1, 0, 1, 1,    // counts
       parameters);              // parameter
 }
 
@@ -899,12 +800,14 @@ const Operator* JSOperatorBuilder::Call(
 const Operator* JSOperatorBuilder::CallWithArrayLike(
     const CallFrequency& frequency, const FeedbackSource& feedback,
     SpeculationMode speculation_mode, CallFeedbackRelation feedback_relation) {
-  CallParameters parameters(2, frequency, feedback, ConvertReceiverMode::kAny,
-                            speculation_mode, feedback_relation);
+  static constexpr int kTheArrayLikeObject = 1;
+  CallParameters parameters(
+      JSCallWithArrayLikeNode::ArityForArgc(kTheArrayLikeObject), frequency,
+      feedback, ConvertReceiverMode::kAny, speculation_mode, feedback_relation);
   return new (zone()) Operator1<CallParameters>(                // --
       IrOpcode::kJSCallWithArrayLike, Operator::kNoProperties,  // opcode
       "JSCallWithArrayLike",                                    // name
-      3, 1, 1, 1, 1, 2,                                         // counts
+      parameters.arity(), 1, 1, 1, 1, 2,                        // counts
       parameters);                                              // parameter
 }
 
@@ -972,13 +875,17 @@ const Operator* JSOperatorBuilder::Construct(uint32_t arity,
 }
 
 const Operator* JSOperatorBuilder::ConstructWithArrayLike(
-    CallFrequency const& frequency) {
-  return new (zone()) Operator1<CallFrequency>(  // --
-      IrOpcode::kJSConstructWithArrayLike,       // opcode
-      Operator::kNoProperties,                   // properties
-      "JSConstructWithArrayLike",                // name
-      3, 1, 1, 1, 1, 2,                          // counts
-      frequency);                                // parameter
+    CallFrequency const& frequency, FeedbackSource const& feedback) {
+  static constexpr int kTheArrayLikeObject = 1;
+  ConstructParameters parameters(
+      JSConstructWithArrayLikeNode::ArityForArgc(kTheArrayLikeObject),
+      frequency, feedback);
+  return new (zone()) Operator1<ConstructParameters>(  // --
+      IrOpcode::kJSConstructWithArrayLike,             // opcode
+      Operator::kNoProperties,                         // properties
+      "JSConstructWithArrayLike",                      // name
+      parameters.arity(), 1, 1, 1, 1, 2,               // counts
+      parameters);                                     // parameter
 }
 
 const Operator* JSOperatorBuilder::ConstructWithSpread(
@@ -994,11 +901,14 @@ const Operator* JSOperatorBuilder::ConstructWithSpread(
 
 const Operator* JSOperatorBuilder::LoadNamed(Handle<Name> name,
                                              const FeedbackSource& feedback) {
+  static constexpr int kObject = 1;
+  static constexpr int kFeedbackVector = 1;
+  static constexpr int kArity = kObject + kFeedbackVector;
   NamedAccess access(LanguageMode::kSloppy, name, feedback);
   return new (zone()) Operator1<NamedAccess>(           // --
       IrOpcode::kJSLoadNamed, Operator::kNoProperties,  // opcode
       "JSLoadNamed",                                    // name
-      1, 1, 1, 1, 1, 2,                                 // counts
+      kArity, 1, 1, 1, 1, 2,                            // counts
       access);                                          // parameter
 }
 
@@ -1008,7 +918,7 @@ const Operator* JSOperatorBuilder::LoadProperty(
   return new (zone()) Operator1<PropertyAccess>(           // --
       IrOpcode::kJSLoadProperty, Operator::kNoProperties,  // opcode
       "JSLoadProperty",                                    // name
-      2, 1, 1, 1, 1, 2,                                    // counts
+      3, 1, 1, 1, 1, 2,                                    // counts
       access);                                             // parameter
 }
 
@@ -1018,7 +928,7 @@ const Operator* JSOperatorBuilder::GetIterator(
   return new (zone()) Operator1<GetIteratorParameters>(   // --
       IrOpcode::kJSGetIterator, Operator::kNoProperties,  // opcode
       "JSGetIterator",                                    // name
-      1, 1, 1, 1, 1, 2,                                   // counts
+      2, 1, 1, 1, 1, 2,                                   // counts
       access);                                            // parameter
 }
 
@@ -1027,7 +937,7 @@ const Operator* JSOperatorBuilder::HasProperty(FeedbackSource const& feedback) {
   return new (zone()) Operator1<PropertyAccess>(          // --
       IrOpcode::kJSHasProperty, Operator::kNoProperties,  // opcode
       "JSHasProperty",                                    // name
-      2, 1, 1, 1, 1, 2,                                   // counts
+      3, 1, 1, 1, 1, 2,                                   // counts
       access);                                            // parameter
 }
 
@@ -1091,11 +1001,15 @@ int RestoreRegisterIndexOf(const Operator* op) {
 const Operator* JSOperatorBuilder::StoreNamed(LanguageMode language_mode,
                                               Handle<Name> name,
                                               FeedbackSource const& feedback) {
+  static constexpr int kObject = 1;
+  static constexpr int kValue = 1;
+  static constexpr int kFeedbackVector = 1;
+  static constexpr int kArity = kObject + kValue + kFeedbackVector;
   NamedAccess access(language_mode, name, feedback);
   return new (zone()) Operator1<NamedAccess>(            // --
       IrOpcode::kJSStoreNamed, Operator::kNoProperties,  // opcode
       "JSStoreNamed",                                    // name
-      2, 1, 1, 0, 1, 2,                                  // counts
+      kArity, 1, 1, 0, 1, 2,                             // counts
       access);                                           // parameter
 }
 
@@ -1105,17 +1019,21 @@ const Operator* JSOperatorBuilder::StoreProperty(
   return new (zone()) Operator1<PropertyAccess>(            // --
       IrOpcode::kJSStoreProperty, Operator::kNoProperties,  // opcode
       "JSStoreProperty",                                    // name
-      3, 1, 1, 0, 1, 2,                                     // counts
+      4, 1, 1, 0, 1, 2,                                     // counts
       access);                                              // parameter
 }
 
 const Operator* JSOperatorBuilder::StoreNamedOwn(
     Handle<Name> name, FeedbackSource const& feedback) {
+  static constexpr int kObject = 1;
+  static constexpr int kValue = 1;
+  static constexpr int kFeedbackVector = 1;
+  static constexpr int kArity = kObject + kValue + kFeedbackVector;
   StoreNamedOwnParameters parameters(name, feedback);
   return new (zone()) Operator1<StoreNamedOwnParameters>(   // --
       IrOpcode::kJSStoreNamedOwn, Operator::kNoProperties,  // opcode
       "JSStoreNamedOwn",                                    // name
-      2, 1, 1, 0, 1, 2,                                     // counts
+      kArity, 1, 1, 0, 1, 2,                                // counts
       parameters);                                          // parameter
 }
 
@@ -1136,22 +1054,27 @@ const Operator* JSOperatorBuilder::CreateGeneratorObject() {
 const Operator* JSOperatorBuilder::LoadGlobal(const Handle<Name>& name,
                                               const FeedbackSource& feedback,
                                               TypeofMode typeof_mode) {
+  static constexpr int kFeedbackVector = 1;
+  static constexpr int kArity = kFeedbackVector;
   LoadGlobalParameters parameters(name, feedback, typeof_mode);
   return new (zone()) Operator1<LoadGlobalParameters>(   // --
       IrOpcode::kJSLoadGlobal, Operator::kNoProperties,  // opcode
       "JSLoadGlobal",                                    // name
-      0, 1, 1, 1, 1, 2,                                  // counts
+      kArity, 1, 1, 1, 1, 2,                             // counts
       parameters);                                       // parameter
 }
 
 const Operator* JSOperatorBuilder::StoreGlobal(LanguageMode language_mode,
                                                const Handle<Name>& name,
                                                const FeedbackSource& feedback) {
+  static constexpr int kValue = 1;
+  static constexpr int kFeedbackVector = 1;
+  static constexpr int kArity = kValue + kFeedbackVector;
   StoreGlobalParameters parameters(language_mode, feedback, name);
   return new (zone()) Operator1<StoreGlobalParameters>(   // --
       IrOpcode::kJSStoreGlobal, Operator::kNoProperties,  // opcode
       "JSStoreGlobal",                                    // name
-      1, 1, 1, 0, 1, 2,                                   // counts
+      kArity, 1, 1, 0, 1, 2,                              // counts
       parameters);                                        // parameter
 }
 
@@ -1285,18 +1208,20 @@ const Operator* JSOperatorBuilder::CreateLiteralArray(
       IrOpcode::kJSCreateLiteralArray,                     // opcode
       Operator::kNoProperties,                             // properties
       "JSCreateLiteralArray",                              // name
-      0, 1, 1, 1, 1, 2,                                    // counts
+      1, 1, 1, 1, 1, 2,                                    // counts
       parameters);                                         // parameter
 }
 
 const Operator* JSOperatorBuilder::CreateEmptyLiteralArray(
     FeedbackSource const& feedback) {
+  static constexpr int kFeedbackVector = 1;
+  static constexpr int kArity = kFeedbackVector;
   FeedbackParameter parameters(feedback);
   return new (zone()) Operator1<FeedbackParameter>(  // --
       IrOpcode::kJSCreateEmptyLiteralArray,          // opcode
       Operator::kEliminatable,                       // properties
       "JSCreateEmptyLiteralArray",                   // name
-      0, 1, 1, 1, 1, 0,                              // counts
+      kArity, 1, 1, 1, 1, 0,                         // counts
       parameters);                                   // parameter
 }
 
@@ -1318,7 +1243,7 @@ const Operator* JSOperatorBuilder::CreateLiteralObject(
       IrOpcode::kJSCreateLiteralObject,                    // opcode
       Operator::kNoProperties,                             // properties
       "JSCreateLiteralObject",                             // name
-      0, 1, 1, 1, 1, 2,                                    // counts
+      1, 1, 1, 1, 1, 2,                                    // counts
       parameters);                                         // parameter
 }
 
@@ -1330,7 +1255,7 @@ const Operator* JSOperatorBuilder::GetTemplateObject(
       IrOpcode::kJSGetTemplateObject,                          // opcode
       Operator::kEliminatable,                                 // properties
       "JSGetTemplateObject",                                   // name
-      0, 1, 1, 1, 1, 0,                                        // counts
+      1, 1, 1, 1, 1, 0,                                        // counts
       parameters);                                             // parameter
 }
 
@@ -1341,7 +1266,7 @@ const Operator* JSOperatorBuilder::CloneObject(FeedbackSource const& feedback,
       IrOpcode::kJSCloneObject,                          // opcode
       Operator::kNoProperties,                           // properties
       "JSCloneObject",                                   // name
-      1, 1, 1, 1, 1, 2,                                  // counts
+      2, 1, 1, 1, 1, 2,                                  // counts
       parameters);                                       // parameter
 }
 
@@ -1359,7 +1284,7 @@ const Operator* JSOperatorBuilder::CreateEmptyLiteralObject() {
       IrOpcode::kJSCreateEmptyLiteralObject,  // opcode
       Operator::kNoProperties,                // properties
       "JSCreateEmptyLiteralObject",           // name
-      1, 1, 1, 1, 1, 2);                      // counts
+      0, 1, 1, 1, 1, 2);                      // counts
 }
 
 const Operator* JSOperatorBuilder::CreateLiteralRegExp(
@@ -1371,7 +1296,7 @@ const Operator* JSOperatorBuilder::CreateLiteralRegExp(
       IrOpcode::kJSCreateLiteralRegExp,                    // opcode
       Operator::kNoProperties,                             // properties
       "JSCreateLiteralRegExp",                             // name
-      0, 1, 1, 1, 1, 2,                                    // counts
+      1, 1, 1, 1, 1, 2,                                    // counts
       parameters);                                         // parameter
 }
 
@@ -1420,9 +1345,7 @@ Handle<ScopeInfo> ScopeInfoOf(const Operator* op) {
   return OpParameter<Handle<ScopeInfo>>(op);
 }
 
-#undef BINARY_OP_LIST
 #undef CACHED_OP_LIST
-#undef COMPARE_OP_LIST
 
 }  // namespace compiler
 }  // namespace internal

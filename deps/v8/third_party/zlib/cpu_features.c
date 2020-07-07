@@ -17,8 +17,15 @@
 
 /* TODO(cavalcantii): remove checks for x86_flags on deflate.
  */
+#if defined(ARMV8_OS_MACOS)
+/* crc32 is a baseline feature in ARMv8.1-A, and macOS running on arm64 is new
+ * enough that this can be assumed without runtime detection. */
+int ZLIB_INTERNAL arm_cpu_enable_crc32 = 1;
+#else
 int ZLIB_INTERNAL arm_cpu_enable_crc32 = 0;
+#endif
 int ZLIB_INTERNAL arm_cpu_enable_pmull = 0;
+int ZLIB_INTERNAL x86_cpu_enable_sse2 = 0;
 int ZLIB_INTERNAL x86_cpu_enable_ssse3 = 0;
 int ZLIB_INTERNAL x86_cpu_enable_simd = 0;
 
@@ -45,7 +52,7 @@ int ZLIB_INTERNAL x86_cpu_enable_simd = 0;
 #error cpu_features.c CPU feature detection in not defined for your platform
 #endif
 
-#if !defined(CPU_NO_SIMD) && !defined(ARM_OS_IOS)
+#if !defined(CPU_NO_SIMD) && !defined(ARMV8_OS_MACOS) && !defined(ARM_OS_IOS)
 static void _cpu_check_features(void);
 #endif
 
@@ -74,7 +81,7 @@ void ZLIB_INTERNAL cpu_check_features(void)
  * iOS@ARM is a special case where we always have NEON but don't check
  * for crypto extensions.
  */
-#ifndef ARM_OS_IOS
+#if !defined(ARMV8_OS_MACOS) && !defined(ARM_OS_IOS)
 /*
  * See http://bit.ly/2CcoEsr for run-time detection of ARM features and also
  * crbug.com/931275 for android_getCpuFeatures() use in the Android sandbox.
@@ -127,15 +134,19 @@ static void _cpu_check_features(void)
     int x86_cpu_has_sse42;
     int x86_cpu_has_pclmulqdq;
     int abcd[4];
+
 #ifdef _MSC_VER
     __cpuid(abcd, 1);
 #else
     __cpuid(1, abcd[0], abcd[1], abcd[2], abcd[3]);
 #endif
+
     x86_cpu_has_sse2 = abcd[3] & 0x4000000;
     x86_cpu_has_ssse3 = abcd[2] & 0x000200;
     x86_cpu_has_sse42 = abcd[2] & 0x100000;
     x86_cpu_has_pclmulqdq = abcd[2] & 0x2;
+
+    x86_cpu_enable_sse2 = x86_cpu_has_sse2;
 
     x86_cpu_enable_ssse3 = x86_cpu_has_ssse3;
 

@@ -5,6 +5,7 @@
 # found in the LICENSE file.
 
 # for py2/py3 compatibility
+from __future__ import absolute_import
 from __future__ import print_function
 from functools import reduce
 
@@ -15,7 +16,7 @@ import sys
 import tempfile
 
 # Adds testrunner to the path hence it has to be imported at the beggining.
-import base_runner
+from . import base_runner
 
 from testrunner.local import utils
 from testrunner.local.variants import ALL_VARIANTS
@@ -259,6 +260,8 @@ class StandardTestRunner(base_runner.BaseTestRunner):
     for v in user_variants:
       if v not in ALL_VARIANTS:
         print('Unknown variant: %s' % v)
+        print('    Available variants: %s' % ALL_VARIANTS)
+        print('    Available variant aliases: %s' % VARIANT_ALIASES.keys());
         raise base_runner.TestRunnerError()
     assert False, 'Unreachable'
 

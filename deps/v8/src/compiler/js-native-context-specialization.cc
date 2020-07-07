@@ -442,8 +442,7 @@ Reduction JSNativeContextSpecialization::ReduceJSInstanceOf(Node* node) {
     NodeProperties::ReplaceValueInput(node, object, 1);
     NodeProperties::ReplaceEffectInput(node, effect);
     NodeProperties::ChangeOp(node, javascript()->OrdinaryHasInstance());
-    Reduction const reduction = ReduceJSOrdinaryHasInstance(node);
-    return reduction.Changed() ? reduction : Changed(node);
+    return Changed(node).FollowedBy(ReduceJSOrdinaryHasInstance(node));
   }
 
   if (access_info.IsDataConstant()) {
@@ -483,13 +482,21 @@ Reduction JSNativeContextSpecialization::ReduceJSInstanceOf(Node* node) {
 
     // Call the @@hasInstance handler.
     Node* target = jsgraph()->Constant(*constant);
-    node->InsertInput(graph()->zone(), 0, target);
-    node->ReplaceInput(1, constructor);
-    node->ReplaceInput(2, object);
-    node->ReplaceInput(4, continuation_frame_state);
-    node->ReplaceInput(5, effect);
+    Node* feedback = jsgraph()->UndefinedConstant();
+    // Value inputs plus context, frame state, effect, control.
+    STATIC_ASSERT(JSCallNode::ArityForArgc(1) + 4 == 8);
+    node->EnsureInputCount(graph()->zone(), 8);
+    node->ReplaceInput(JSCallNode::TargetIndex(), target);
+    node->ReplaceInput(JSCallNode::ReceiverIndex(), constructor);
+    node->ReplaceInput(JSCallNode::ArgumentIndex(0), object);
+    node->ReplaceInput(3, feedback);
+    node->ReplaceInput(4, context);
+    node->ReplaceInput(5, continuation_frame_state);
+    node->ReplaceInput(6, effect);
+    node->ReplaceInput(7, control);
     NodeProperties::ChangeOp(
-        node, javascript()->Call(3, CallFrequency(), FeedbackSource(),
+        node, javascript()->Call(JSCallNode::ArityForArgc(1), CallFrequency(),
+                                 FeedbackSource(),
                                  ConvertReceiverMode::kNotNullOrUndefined));
 
     // Rewire the value uses of {node} to ToBoolean conversion of the result.
@@ -623,8 +630,7 @@ Reduction JSNativeContextSpecialization::ReduceJSOrdinaryHasInstance(
     NodeProperties::ReplaceValueInput(
         node, jsgraph()->Constant(bound_target_function), 1);
     NodeProperties::ChangeOp(node, javascript()->InstanceOf(FeedbackSource()));
-    Reduction const reduction = ReduceJSInstanceOf(node);
-    return reduction.Changed() ? reduction : Changed(node);
+    return Changed(node).FollowedBy(ReduceJSInstanceOf(node));
   }
 
   if (m.Ref(broker()).IsJSFunction()) {
@@ -650,8 +656,7 @@ Reduction JSNativeContextSpecialization::ReduceJSOrdinaryHasInstance(
     NodeProperties::ReplaceValueInput(node, object, 0);
     NodeProperties::ReplaceValueInput(node, prototype_constant, 1);
     NodeProperties::ChangeOp(node, javascript()->HasInPrototypeChain());
-    Reduction const reduction = ReduceJSHasInPrototypeChain(node);
-    return reduction.Changed() ? reduction : Changed(node);
+    return Changed(node).FollowedBy(ReduceJSHasInPrototypeChain(node));
   }
 
   return NoChange();
@@ -979,8 +984,8 @@ Reduction JSNativeContextSpecialization::ReduceGlobalAccess(
 }
 
 Reduction JSNativeContextSpecialization::ReduceJSLoadGlobal(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSLoadGlobal, node->opcode());
-  LoadGlobalParameters const& p = LoadGlobalParametersOf(node->op());
+  JSLoadGlobalNode n(node);
+  LoadGlobalParameters const& p = n.Parameters();
   if (!p.feedback().IsValid()) return NoChange();
 
   ProcessedFeedback const& processed =
@@ -989,7 +994,7 @@ Reduction JSNativeContextSpecialization::ReduceJSLoadGlobal(Node* node) {
 
   GlobalAccessFeedback const& feedback = processed.AsGlobalAccess();
   if (feedback.IsScriptContextSlot()) {
-    Node* effect = NodeProperties::GetEffectInput(node);
+    Effect effect = n.effect();
     Node* script_context = jsgraph()->Constant(feedback.script_context());
     Node* value = effect =
         graph()->NewNode(javascript()->LoadContext(0, feedback.slot_index(),
@@ -1008,9 +1013,9 @@ Reduction JSNativeContextSpecialization::ReduceJSLoadGlobal(Node* node) {
 }
 
 Reduction JSNativeContextSpecialization::ReduceJSStoreGlobal(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSStoreGlobal, node->opcode());
-  Node* value = NodeProperties::GetValueInput(node, 0);
-  StoreGlobalParameters const& p = StoreGlobalParametersOf(node->op());
+  JSStoreGlobalNode n(node);
+  StoreGlobalParameters const& p = n.Parameters();
+  Node* value = n.value();
   if (!p.feedback().IsValid()) return NoChange();
 
   ProcessedFeedback const& processed =
@@ -1020,8 +1025,8 @@ Reduction JSNativeContextSpecialization::ReduceJSStoreGlobal(Node* node) {
   GlobalAccessFeedback const& feedback = processed.AsGlobalAccess();
   if (feedback.IsScriptContextSlot()) {
     if (feedback.immutable()) return NoChange();
-    Node* effect = NodeProperties::GetEffectInput(node);
-    Node* control = NodeProperties::GetControlInput(node);
+    Effect effect = n.effect();
+    Control control = n.control();
     Node* script_context = jsgraph()->Constant(feedback.script_context());
     effect =
         graph()->NewNode(javascript()->StoreContext(0, feedback.slot_index()),
@@ -1048,6 +1053,14 @@ Reduction JSNativeContextSpecialization::ReduceNamedAccess(
          node->opcode() == IrOpcode::kJSStoreNamedOwn ||
          node->opcode() == IrOpcode::kJSStoreDataPropertyInLiteral ||
          node->opcode() == IrOpcode::kJSHasProperty);
+  STATIC_ASSERT(JSLoadNamedNode::ObjectIndex() == 0 &&
+                JSStoreNamedNode::ObjectIndex() == 0 &&
+                JSLoadPropertyNode::ObjectIndex() == 0 &&
+                JSStorePropertyNode::ObjectIndex() == 0 &&
+                JSStoreNamedOwnNode::ObjectIndex() == 0 &&
+                JSStoreNamedNode::ObjectIndex() == 0 &&
+                JSStoreDataPropertyInLiteralNode::ObjectIndex() == 0 &&
+                JSHasPropertyNode::ObjectIndex() == 0);
   Node* receiver = NodeProperties::GetValueInput(node, 0);
   Node* context = NodeProperties::GetContextInput(node);
   Node* frame_state = NodeProperties::GetFrameStateInput(node);
@@ -1318,9 +1331,9 @@ Reduction JSNativeContextSpecialization::ReduceNamedAccess(
 }
 
 Reduction JSNativeContextSpecialization::ReduceJSLoadNamed(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSLoadNamed, node->opcode());
-  NamedAccess const& p = NamedAccessOf(node->op());
-  Node* const receiver = NodeProperties::GetValueInput(node, 0);
+  JSLoadNamedNode n(node);
+  NamedAccess const& p = n.Parameters();
+  Node* const receiver = n.object();
   NameRef name(broker(), p.name());
 
   // Check if we have a constant receiver.
@@ -1360,14 +1373,14 @@ Reduction JSNativeContextSpecialization::ReduceJSLoadNamed(Node* node) {
 }
 
 Reduction JSNativeContextSpecialization::ReduceJSGetIterator(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSGetIterator, node->opcode());
-  GetIteratorParameters const& p = GetIteratorParametersOf(node->op());
+  JSGetIteratorNode n(node);
+  GetIteratorParameters const& p = n.Parameters();
 
-  Node* receiver = NodeProperties::GetValueInput(node, 0);
-  Node* context = NodeProperties::GetContextInput(node);
-  Node* frame_state = NodeProperties::GetFrameStateInput(node);
-  Node* effect = NodeProperties::GetEffectInput(node);
-  Node* control = NodeProperties::GetControlInput(node);
+  TNode<Object> receiver = n.receiver();
+  TNode<Object> context = n.context();
+  FrameState frame_state = n.frame_state();
+  Effect effect = n.effect();
+  Control control = n.control();
 
   // Load iterator property operator
   Handle<Name> iterator_symbol = factory()->iterator_symbol();
@@ -1383,8 +1396,9 @@ Reduction JSNativeContextSpecialization::ReduceJSGetIterator(Node* node) {
       jsgraph(), Builtins::kGetIteratorWithFeedbackLazyDeoptContinuation,
       context, lazy_deopt_parameters, arraysize(lazy_deopt_parameters),
       frame_state, ContinuationFrameStateMode::LAZY);
-  Node* load_property = graph()->NewNode(
-      load_op, receiver, context, lazy_deopt_frame_state, effect, control);
+  Node* load_property =
+      graph()->NewNode(load_op, receiver, n.feedback_vector(), context,
+                       lazy_deopt_frame_state, effect, control);
   effect = load_property;
   control = load_property;
 
@@ -1431,34 +1445,32 @@ Reduction JSNativeContextSpecialization::ReduceJSGetIterator(Node* node) {
   SpeculationMode mode = feedback.IsInsufficient()
                              ? SpeculationMode::kDisallowSpeculation
                              : feedback.AsCall().speculation_mode();
-  const Operator* call_op =
-      javascript()->Call(2, CallFrequency(), p.callFeedback(),
-                         ConvertReceiverMode::kNotNullOrUndefined, mode,
-                         CallFeedbackRelation::kRelated);
-  Node* call_property = graph()->NewNode(call_op, load_property, receiver,
-                                         context, frame_state, effect, control);
+  const Operator* call_op = javascript()->Call(
+      JSCallNode::ArityForArgc(0), CallFrequency(), p.callFeedback(),
+      ConvertReceiverMode::kNotNullOrUndefined, mode,
+      CallFeedbackRelation::kRelated);
+  Node* call_property =
+      graph()->NewNode(call_op, load_property, receiver, n.feedback_vector(),
+                       context, frame_state, effect, control);
 
   return Replace(call_property);
 }
 
 Reduction JSNativeContextSpecialization::ReduceJSStoreNamed(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSStoreNamed, node->opcode());
-  NamedAccess const& p = NamedAccessOf(node->op());
-  Node* const value = NodeProperties::GetValueInput(node, 1);
-
+  JSStoreNamedNode n(node);
+  NamedAccess const& p = n.Parameters();
   if (!p.feedback().IsValid()) return NoChange();
-  return ReducePropertyAccess(node, nullptr, NameRef(broker(), p.name()), value,
-                              FeedbackSource(p.feedback()), AccessMode::kStore);
+  return ReducePropertyAccess(node, nullptr, NameRef(broker(), p.name()),
+                              n.value(), FeedbackSource(p.feedback()),
+                              AccessMode::kStore);
 }
 
 Reduction JSNativeContextSpecialization::ReduceJSStoreNamedOwn(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSStoreNamedOwn, node->opcode());
-  StoreNamedOwnParameters const& p = StoreNamedOwnParametersOf(node->op());
-  Node* const value = NodeProperties::GetValueInput(node, 1);
-
+  JSStoreNamedOwnNode n(node);
+  StoreNamedOwnParameters const& p = n.Parameters();
   if (!p.feedback().IsValid()) return NoChange();
-  return ReducePropertyAccess(node, nullptr, NameRef(broker(), p.name()), value,
-                              FeedbackSource(p.feedback()),
+  return ReducePropertyAccess(node, nullptr, NameRef(broker(), p.name()),
+                              n.value(), FeedbackSource(p.feedback()),
                               AccessMode::kStoreInLiteral);
 }
 
@@ -1548,6 +1560,11 @@ Reduction JSNativeContextSpecialization::ReduceElementAccess(
          node->opcode() == IrOpcode::kJSStoreInArrayLiteral ||
          node->opcode() == IrOpcode::kJSStoreDataPropertyInLiteral ||
          node->opcode() == IrOpcode::kJSHasProperty);
+  STATIC_ASSERT(JSLoadPropertyNode::ObjectIndex() == 0 &&
+                JSStorePropertyNode::ObjectIndex() == 0 &&
+                JSStoreInArrayLiteralNode::ArrayIndex() == 0 &&
+                JSStoreDataPropertyInLiteralNode::ObjectIndex() == 0 &&
+                JSHasPropertyNode::ObjectIndex() == 0);
 
   Node* receiver = NodeProperties::GetValueInput(node, 0);
   Node* effect = NodeProperties::GetEffectInput(node);
@@ -1897,13 +1914,11 @@ Reduction JSNativeContextSpecialization::ReduceSoftDeoptimize(
 }
 
 Reduction JSNativeContextSpecialization::ReduceJSHasProperty(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSHasProperty, node->opcode());
-  PropertyAccess const& p = PropertyAccessOf(node->op());
-  Node* key = NodeProperties::GetValueInput(node, 1);
+  JSHasPropertyNode n(node);
+  PropertyAccess const& p = n.Parameters();
   Node* value = jsgraph()->Dead();
-
   if (!p.feedback().IsValid()) return NoChange();
-  return ReducePropertyAccess(node, key, base::nullopt, value,
+  return ReducePropertyAccess(node, n.key(), base::nullopt, value,
                               FeedbackSource(p.feedback()), AccessMode::kHas);
 }
 
@@ -2014,9 +2029,9 @@ Reduction JSNativeContextSpecialization::ReduceJSLoadPropertyWithEnumeratedKey(
 }
 
 Reduction JSNativeContextSpecialization::ReduceJSLoadProperty(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSLoadProperty, node->opcode());
-  PropertyAccess const& p = PropertyAccessOf(node->op());
-  Node* name = NodeProperties::GetValueInput(node, 1);
+  JSLoadPropertyNode n(node);
+  PropertyAccess const& p = n.Parameters();
+  Node* name = n.key();
 
   if (name->opcode() == IrOpcode::kJSForInNext) {
     Reduction reduction = ReduceJSLoadPropertyWithEnumeratedKey(node);
@@ -2030,13 +2045,10 @@ Reduction JSNativeContextSpecialization::ReduceJSLoadProperty(Node* node) {
 }
 
 Reduction JSNativeContextSpecialization::ReduceJSStoreProperty(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSStoreProperty, node->opcode());
-  PropertyAccess const& p = PropertyAccessOf(node->op());
-  Node* const key = NodeProperties::GetValueInput(node, 1);
-  Node* const value = NodeProperties::GetValueInput(node, 2);
-
+  JSStorePropertyNode n(node);
+  PropertyAccess const& p = n.Parameters();
   if (!p.feedback().IsValid()) return NoChange();
-  return ReducePropertyAccess(node, key, base::nullopt, value,
+  return ReducePropertyAccess(node, n.key(), base::nullopt, n.value(),
                               FeedbackSource(p.feedback()), AccessMode::kStore);
 }
 
@@ -2050,10 +2062,12 @@ Node* JSNativeContextSpecialization::InlinePropertyGetterCall(
   // Introduce the call to the getter function.
   Node* value;
   if (constant.IsJSFunction()) {
+    Node* feedback = jsgraph()->UndefinedConstant();
     value = *effect = *control = graph()->NewNode(
-        jsgraph()->javascript()->Call(2, CallFrequency(), FeedbackSource(),
+        jsgraph()->javascript()->Call(JSCallNode::ArityForArgc(0),
+                                      CallFrequency(), FeedbackSource(),
                                       ConvertReceiverMode::kNotNullOrUndefined),
-        target, receiver, context, frame_state, *effect, *control);
+        target, receiver, feedback, context, frame_state, *effect, *control);
   } else {
     Node* holder = access_info.holder().is_null()
                        ? receiver
@@ -2087,10 +2101,13 @@ void JSNativeContextSpecialization::InlinePropertySetterCall(
   FrameStateInfo const& frame_info = FrameStateInfoOf(frame_state->op());
   // Introduce the call to the setter function.
   if (constant.IsJSFunction()) {
+    Node* feedback = jsgraph()->UndefinedConstant();
     *effect = *control = graph()->NewNode(
-        jsgraph()->javascript()->Call(3, CallFrequency(), FeedbackSource(),
+        jsgraph()->javascript()->Call(JSCallNode::ArityForArgc(1),
+                                      CallFrequency(), FeedbackSource(),
                                       ConvertReceiverMode::kNotNullOrUndefined),
-        target, receiver, value, context, frame_state, *effect, *control);
+        target, receiver, value, feedback, context, frame_state, *effect,
+        *control);
   } else {
     Node* holder = access_info.holder().is_null()
                        ? receiver
@@ -2451,26 +2468,27 @@ JSNativeContextSpecialization::BuildPropertyStore(
 
 Reduction JSNativeContextSpecialization::ReduceJSStoreDataPropertyInLiteral(
     Node* node) {
-  DCHECK_EQ(IrOpcode::kJSStoreDataPropertyInLiteral, node->opcode());
-  FeedbackParameter const& p = FeedbackParameterOf(node->op());
-  Node* const key = NodeProperties::GetValueInput(node, 1);
-  Node* const value = NodeProperties::GetValueInput(node, 2);
-
+  JSStoreDataPropertyInLiteralNode n(node);
+  FeedbackParameter const& p = n.Parameters();
   if (!p.feedback().IsValid()) return NoChange();
-  return ReducePropertyAccess(node, key, base::nullopt, value,
+
+  NumberMatcher mflags(n.flags());
+  CHECK(mflags.HasValue());
+  DataPropertyInLiteralFlags cflags(mflags.Value());
+  DCHECK(!(cflags & DataPropertyInLiteralFlag::kDontEnum));
+  if (cflags & DataPropertyInLiteralFlag::kSetFunctionName) return NoChange();
+
+  return ReducePropertyAccess(node, n.name(), base::nullopt, n.value(),
                               FeedbackSource(p.feedback()),
                               AccessMode::kStoreInLiteral);
 }
 
 Reduction JSNativeContextSpecialization::ReduceJSStoreInArrayLiteral(
     Node* node) {
-  DCHECK_EQ(IrOpcode::kJSStoreInArrayLiteral, node->opcode());
-  FeedbackParameter const& p = FeedbackParameterOf(node->op());
-  Node* const index = NodeProperties::GetValueInput(node, 1);
-  Node* const value = NodeProperties::GetValueInput(node, 2);
-
+  JSStoreInArrayLiteralNode n(node);
+  FeedbackParameter const& p = n.Parameters();
   if (!p.feedback().IsValid()) return NoChange();
-  return ReducePropertyAccess(node, index, base::nullopt, value,
+  return ReducePropertyAccess(node, n.index(), base::nullopt, n.value(),
                               FeedbackSource(p.feedback()),
                               AccessMode::kStoreInLiteral);
 }
@@ -2612,9 +2630,10 @@ JSNativeContextSpecialization::BuildElementAccess(
       situation = kHandleOOB_SmiCheckDone;
     } else {
       // Check that the {index} is in the valid range for the {receiver}.
-      index = effect =
-          graph()->NewNode(simplified()->CheckBounds(FeedbackSource()), index,
-                           length, effect, control);
+      index = effect = graph()->NewNode(
+          simplified()->CheckBounds(
+              FeedbackSource(), CheckBoundsFlag::kConvertStringAndMinusZero),
+          index, length, effect, control);
       situation = kBoundsCheckDone;
     }
 
@@ -2642,7 +2661,8 @@ JSNativeContextSpecialization::BuildElementAccess(
             index = etrue = graph()->NewNode(
                 simplified()->CheckBounds(
                     FeedbackSource(),
-                    CheckBoundsParameters::kAbortOnOutOfBounds),
+                    CheckBoundsFlag::kConvertStringAndMinusZero |
+                        CheckBoundsFlag::kAbortOnOutOfBounds),
                 index, length, etrue, if_true);
 
             // Perform the actual load
@@ -2712,7 +2732,8 @@ JSNativeContextSpecialization::BuildElementAccess(
             index = etrue = graph()->NewNode(
                 simplified()->CheckBounds(
                     FeedbackSource(),
-                    CheckBoundsParameters::kAbortOnOutOfBounds),
+                    CheckBoundsFlag::kConvertStringAndMinusZero |
+                        CheckBoundsFlag::kAbortOnOutOfBounds),
                 index, length, etrue, if_true);
 
             // Perform the actual store.
@@ -2796,13 +2817,15 @@ JSNativeContextSpecialization::BuildElementAccess(
       // bounds check below and just skip the store below if it's out of
       // bounds for the {receiver}.
       index = effect = graph()->NewNode(
-          simplified()->CheckBounds(FeedbackSource()), index,
-          jsgraph()->Constant(Smi::kMaxValue), effect, control);
+          simplified()->CheckBounds(
+              FeedbackSource(), CheckBoundsFlag::kConvertStringAndMinusZero),
+          index, jsgraph()->Constant(Smi::kMaxValue), effect, control);
     } else {
       // Check that the {index} is in the valid range for the {receiver}.
-      index = effect =
-          graph()->NewNode(simplified()->CheckBounds(FeedbackSource()), index,
-                           length, effect, control);
+      index = effect = graph()->NewNode(
+          simplified()->CheckBounds(
+              FeedbackSource(), CheckBoundsFlag::kConvertStringAndMinusZero),
+          index, length, effect, control);
     }
 
     // Compute the element access.
@@ -2850,10 +2873,12 @@ JSNativeContextSpecialization::BuildElementAccess(
           // Do a real bounds check against {length}. This is in order to
           // protect against a potential typer bug leading to the elimination of
           // the NumberLessThan above.
-          index = etrue = graph()->NewNode(
-              simplified()->CheckBounds(
-                  FeedbackSource(), CheckBoundsParameters::kAbortOnOutOfBounds),
-              index, length, etrue, if_true);
+          index = etrue =
+              graph()->NewNode(simplified()->CheckBounds(
+                                   FeedbackSource(),
+                                   CheckBoundsFlag::kConvertStringAndMinusZero |
+                                       CheckBoundsFlag::kAbortOnOutOfBounds),
+                               index, length, etrue, if_true);
 
           // Perform the actual load
           vtrue = etrue =
@@ -2952,9 +2977,10 @@ JSNativeContextSpecialization::BuildElementAccess(
         Node* if_true = graph()->NewNode(common()->IfTrue(), branch);
         Node* etrue = effect;
 
-        Node* checked = etrue =
-            graph()->NewNode(simplified()->CheckBounds(FeedbackSource()), index,
-                             length, etrue, if_true);
+        Node* checked = etrue = graph()->NewNode(
+            simplified()->CheckBounds(
+                FeedbackSource(), CheckBoundsFlag::kConvertStringAndMinusZero),
+            index, length, etrue, if_true);
 
         Node* element = etrue =
             graph()->NewNode(simplified()->LoadElement(element_access),
@@ -3041,9 +3067,10 @@ JSNativeContextSpecialization::BuildElementAccess(
                                    jsgraph()->Constant(JSObject::kMaxGap))
                 : graph()->NewNode(simplified()->NumberAdd(), length,
                                    jsgraph()->OneConstant());
-        index = effect =
-            graph()->NewNode(simplified()->CheckBounds(FeedbackSource()), index,
-                             limit, effect, control);
+        index = effect = graph()->NewNode(
+            simplified()->CheckBounds(
+                FeedbackSource(), CheckBoundsFlag::kConvertStringAndMinusZero),
+            index, limit, effect, control);
 
         // Grow {elements} backing store if necessary.
         GrowFastElementsMode mode =
@@ -3111,8 +3138,9 @@ Node* JSNativeContextSpecialization::BuildIndexedStringLoad(
       dependencies()->DependOnNoElementsProtector()) {
     // Ensure that the {index} is a valid String length.
     index = *effect = graph()->NewNode(
-        simplified()->CheckBounds(FeedbackSource()), index,
-        jsgraph()->Constant(String::kMaxLength), *effect, *control);
+        simplified()->CheckBounds(FeedbackSource(),
+                                  CheckBoundsFlag::kConvertStringAndMinusZero),
+        index, jsgraph()->Constant(String::kMaxLength), *effect, *control);
 
     // Load the single character string from {receiver} or yield
     // undefined if the {index} is not within the valid bounds.
@@ -3129,7 +3157,8 @@ Node* JSNativeContextSpecialization::BuildIndexedStringLoad(
     // NumberLessThan above.
     Node* etrue = index = graph()->NewNode(
         simplified()->CheckBounds(FeedbackSource(),
-                                  CheckBoundsParameters::kAbortOnOutOfBounds),
+                                  CheckBoundsFlag::kConvertStringAndMinusZero |
+                                      CheckBoundsFlag::kAbortOnOutOfBounds),
         index, length, *effect, if_true);
     Node* masked_index = graph()->NewNode(simplified()->PoisonIndex(), index);
     Node* vtrue = etrue =
@@ -3147,9 +3176,10 @@ Node* JSNativeContextSpecialization::BuildIndexedStringLoad(
                             vtrue, vfalse, *control);
   } else {
     // Ensure that {index} is less than {receiver} length.
-    index = *effect =
-        graph()->NewNode(simplified()->CheckBounds(FeedbackSource()), index,
-                         length, *effect, *control);
+    index = *effect = graph()->NewNode(
+        simplified()->CheckBounds(FeedbackSource(),
+                                  CheckBoundsFlag::kConvertStringAndMinusZero),
+        index, length, *effect, *control);
 
     Node* masked_index = graph()->NewNode(simplified()->PoisonIndex(), index);
 

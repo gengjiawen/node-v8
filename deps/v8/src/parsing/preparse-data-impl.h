@@ -37,8 +37,6 @@ class BaseConsumedPreparseData : public ConsumedPreparseData {
  public:
   class ByteData : public PreparseByteDataConstants {
    public:
-    ByteData() {}
-
     // Reading from the ByteData is only allowed when a ReadingScope is on the
     // stack. This ensures that we have a DisallowHeapAllocation in place
     // whenever ByteData holds a raw pointer into the heap.
@@ -158,17 +156,20 @@ class BaseConsumedPreparseData : public ConsumedPreparseData {
       LanguageMode* language_mode) final;
 
   void RestoreScopeAllocationData(DeclarationScope* scope,
-                                  AstValueFactory* ast_value_factory) final;
+                                  AstValueFactory* ast_value_factory,
+                                  Zone* zone) final;
 
 #ifdef DEBUG
   bool VerifyDataStart();
 #endif
 
  private:
-  void RestoreDataForScope(Scope* scope, AstValueFactory* ast_value_factory);
+  void RestoreDataForScope(Scope* scope, AstValueFactory* ast_value_factory,
+                           Zone* zone);
   void RestoreDataForVariable(Variable* var);
   void RestoreDataForInnerScopes(Scope* scope,
-                                 AstValueFactory* ast_value_factory);
+                                 AstValueFactory* ast_value_factory,
+                                 Zone* zone);
 
   std::unique_ptr<ByteData> scope_data_;
   // When consuming the data, these indexes point to the data we're going to

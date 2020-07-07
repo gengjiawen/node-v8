@@ -426,7 +426,7 @@ class ObjectStatsCollectorImpl {
   bool CanRecordFixedArray(FixedArrayBase array);
   bool IsCowArray(FixedArrayBase array);
 
-  // Blacklist for objects that should not be recorded using
+  // Blocklist for objects that should not be recorded using
   // VirtualObjectStats and RecordSimpleVirtualObjectStats. For recording those
   // objects dispatch to the low level ObjectStats::RecordObjectStats manually.
   bool ShouldRecordObject(HeapObject object, CowMode check_cow_array);
@@ -821,8 +821,6 @@ void ObjectStatsCollectorImpl::CollectGlobalStatistics() {
                                  ObjectStats::STRING_SPLIT_CACHE_TYPE);
   RecordSimpleVirtualObjectStats(HeapObject(), heap_->regexp_multiple_cache(),
                                  ObjectStats::REGEXP_MULTIPLE_CACHE_TYPE);
-  RecordSimpleVirtualObjectStats(HeapObject(), heap_->retained_maps(),
-                                 ObjectStats::RETAINED_MAPS_TYPE);
 
   // WeakArrayList.
   RecordSimpleVirtualObjectStats(HeapObject(),
@@ -841,7 +839,6 @@ void ObjectStatsCollectorImpl::RecordObjectStats(HeapObject obj,
 bool ObjectStatsCollectorImpl::CanRecordFixedArray(FixedArrayBase array) {
   ReadOnlyRoots roots(heap_);
   return array != roots.empty_fixed_array() &&
-         array != roots.empty_sloppy_arguments_elements() &&
          array != roots.empty_slow_element_dictionary() &&
          array != roots.empty_property_dictionary();
 }
@@ -1075,6 +1072,9 @@ void ObjectStatsCollectorImpl::RecordVirtualCodeDetails(Code code) {
 void ObjectStatsCollectorImpl::RecordVirtualContext(Context context) {
   if (context.IsNativeContext()) {
     RecordObjectStats(context, NATIVE_CONTEXT_TYPE, context.Size());
+    RecordSimpleVirtualObjectStats(context, context.retained_maps(),
+                                   ObjectStats::RETAINED_MAPS_TYPE);
+
   } else if (context.IsFunctionContext()) {
     RecordObjectStats(context, FUNCTION_CONTEXT_TYPE, context.Size());
   } else {

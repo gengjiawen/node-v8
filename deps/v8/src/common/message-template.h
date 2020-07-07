@@ -223,8 +223,6 @@ namespace internal {
   T(ProxyGetPrototypeOfNonExtensible,                                          \
     "'getPrototypeOf' on proxy: proxy target is non-extensible but the "       \
     "trap did not return its actual prototype")                                \
-  T(ProxyHandlerOrTargetRevoked,                                               \
-    "Cannot create proxy with a revoked proxy as target or handler")           \
   T(ProxyHasNonConfigurable,                                                   \
     "'has' on proxy: trap returned falsish for property '%' which exists in "  \
     "the proxy target as non-configurable")                                    \
@@ -322,7 +320,7 @@ namespace internal {
     "a location, got %")                                                       \
   T(InvalidArrayBufferLength, "Invalid array buffer length")                   \
   T(ArrayBufferAllocationFailed, "Array buffer allocation failed")             \
-  T(Invalid, "Invalid %s : %")                                                 \
+  T(Invalid, "Invalid % : %")                                                  \
   T(InvalidArrayLength, "Invalid array length")                                \
   T(InvalidAtomicAccessIndex, "Invalid atomic access index")                   \
   T(InvalidCodePoint, "Invalid code point %")                                  \
@@ -500,7 +498,8 @@ namespace internal {
   T(TooManySpreads,                                                            \
     "Literal containing too many nested spreads (up to 65534 allowed)")        \
   T(TooManyVariables, "Too many variables declared (only 4194303 allowed)")    \
-  T(TooManyElementsInPromiseAll, "Too many elements passed to Promise.all")    \
+  T(TooManyElementsInPromiseCombinator,                                        \
+    "Too many elements passed to Promise.%")                                   \
   T(TypedArrayTooShort,                                                        \
     "Derived TypedArray constructor created an array which was too small")     \
   T(UnexpectedEOS, "Unexpected end of input")                                  \
@@ -552,8 +551,11 @@ namespace internal {
   T(WasmTrapDataSegmentDropped, "data segment has been dropped")               \
   T(WasmTrapElemSegmentDropped, "element segment has been dropped")            \
   T(WasmTrapTableOutOfBounds, "table access out of bounds")                    \
-  T(WasmTrapBrOnExnNullRef, "br_on_exn on nullref value")                      \
-  T(WasmTrapRethrowNullRef, "rethrowing nullref value")                        \
+  T(WasmTrapBrOnExnNull, "br_on_exn on null value")                            \
+  T(WasmTrapRethrowNull, "rethrowing null value")                              \
+  T(WasmTrapNullDereference, "dereferencing a null pointer")                   \
+  T(WasmTrapIllegalCast, "illegal cast")                                       \
+  T(WasmTrapArrayOutOfBounds, "array element access out of bounds")            \
   T(WasmExceptionError, "wasm exception")                                      \
   /* Asm.js validation related */                                              \
   T(AsmJsInvalid, "Invalid asm.js: %")                                         \
@@ -593,7 +595,9 @@ namespace internal {
     "WeakRef: target must be an object")                                       \
   T(OptionalChainingNoNew, "Invalid optional chain from new expression")       \
   T(OptionalChainingNoSuper, "Invalid optional chain from super property")     \
-  T(OptionalChainingNoTemplate, "Invalid tagged template on optional chain")
+  T(OptionalChainingNoTemplate, "Invalid tagged template on optional chain")   \
+  /* AggregateError */                                                         \
+  T(AllPromisesRejected, "All promises were rejected")
 
 enum class MessageTemplate {
 #define TEMPLATE(NAME, STRING) k##NAME,

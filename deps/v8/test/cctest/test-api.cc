@@ -1075,20 +1075,23 @@ template<typename Constructor, typename Accessor>
 static void TestFunctionTemplateAccessor(Constructor constructor,
                                          Accessor accessor) {
   LocalContext env;
-  v8::HandleScope scope(env->GetIsolate());
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
 
   Local<v8::FunctionTemplate> fun_templ =
-      v8::FunctionTemplate::New(env->GetIsolate(), constructor);
-  fun_templ->SetClassName(v8_str("funky"));
+      v8::FunctionTemplate::New(isolate, constructor);
+  fun_templ->PrototypeTemplate()->Set(
+      v8::Symbol::GetToStringTag(isolate), v8_str("funky"),
+      static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontEnum));
   fun_templ->InstanceTemplate()->SetAccessor(v8_str("m"), accessor);
+
   Local<Function> fun = fun_templ->GetFunction(env.local()).ToLocalChecked();
   CHECK(env->Global()->Set(env.local(), v8_str("obj"), fun).FromJust());
-  Local<Value> result =
-      v8_compile("(new obj()).toString()")->Run(env.local()).ToLocalChecked();
+  Local<Value> result = CompileRun("(new obj()).toString()");
   CHECK(v8_str("[object funky]")->Equals(env.local(), result).FromJust());
   CompileRun("var obj_instance = new obj();");
-  Local<Script> script;
-  script = v8_compile("obj_instance.x");
+
+  Local<Script> script = v8_compile("obj_instance.x");
   for (int i = 0; i < 30; i++) {
     CHECK_EQ(1, v8_run_int32value(script));
   }
@@ -10889,7 +10892,7 @@ THREADED_TEST(SetPrototypeThrows) {
 
   CHECK(o0->SetPrototype(context.local(), o1).FromJust());
   // If setting the prototype leads to the cycle, SetPrototype should
-  // return false and keep VM in sane state.
+  // return false, because cyclic prototype chains would be invalid.
   v8::TryCatch try_catch(isolate);
   CHECK(o1->SetPrototype(context.local(), o0).IsNothing());
   CHECK(!try_catch.HasCaught());
@@ -12481,7 +12484,7 @@ TEST(FunctionNewInstanceHasNoSideEffect) {
   v8::HandleScope scope(isolate);
   LocalContext context;
 
-  // A whitelisted function that creates a new object with both side-effect
+  // A allowlisted function that creates a new object with both side-effect
   // free/full instantiations. Should throw.
   Local<Function> func0 =
       Function::New(context.local(), NoSideEffectAndSideEffectConstructHandler,
@@ -12494,7 +12497,7 @@ TEST(FunctionNewInstanceHasNoSideEffect) {
             v8::debug::EvaluateGlobalMode::kDisableBreaksAndThrowOnSideEffect)
             .IsEmpty());
 
-  // A whitelisted function that creates a new object. Should throw.
+  // A allowlisted function that creates a new object. Should throw.
   Local<Function> func =
       Function::New(context.local(), DefaultConstructHandler, Local<Value>(), 0,
                     v8::ConstructorBehavior::kAllow,
@@ -12506,7 +12509,7 @@ TEST(FunctionNewInstanceHasNoSideEffect) {
             v8::debug::EvaluateGlobalMode::kDisableBreaksAndThrowOnSideEffect)
             .IsEmpty());
 
-  // A whitelisted function that creates a new object with explicit intent to
+  // A allowlisted function that creates a new object with explicit intent to
   // have no side-effects (e.g. building an "object wrapper"). Should not throw.
   Local<Function> func2 =
       Function::New(context.local(), NoSideEffectConstructHandler,
@@ -12633,22 +12636,20 @@ THREADED_TEST(NewTargetHandler) {
 }
 
 THREADED_TEST(ObjectProtoToString) {
+  LocalContext context;
   v8::Isolate* isolate = CcTest::isolate();
   v8::HandleScope scope(isolate);
   Local<v8::FunctionTemplate> templ = v8::FunctionTemplate::New(isolate);
   templ->SetClassName(v8_str("MyClass"));
 
-  LocalContext context;
 
   Local<String> customized_tostring = v8_str("customized toString");
 
   // Replace Object.prototype.toString
-  v8_compile(
-      "Object.prototype.toString = function() {"
-      "  return 'customized toString';"
-      "}")
-      ->Run(context.local())
-      .ToLocalChecked();
+  CompileRun(R"(
+      Object.prototype.toString = function() {
+        return 'customized toString';
+      })");
 
   // Normal ToString call should call replaced Object.prototype.toString
   Local<v8::Object> instance = templ->GetFunction(context.local())
@@ -12659,56 +12660,11 @@ THREADED_TEST(ObjectProtoToString) {
   CHECK(value->IsString() &&
         value->Equals(context.local(), customized_tostring).FromJust());
 
-  // ObjectProtoToString should not call replace toString function.
+  // ObjectProtoToString should not call replace toString function. It should
+  // not look at the class name either.
   value = instance->ObjectProtoToString(context.local()).ToLocalChecked();
   CHECK(value->IsString() &&
-        value->Equals(context.local(), v8_str("[object MyClass]")).FromJust());
-
-  // Check global
-  value =
-      context->Global()->ObjectProtoToString(context.local()).ToLocalChecked();
-  CHECK(value->IsString() &&
         value->Equals(context.local(), v8_str("[object Object]")).FromJust());
-
-  // Check ordinary object
-  Local<Value> object =
-      v8_compile("new Object()")->Run(context.local()).ToLocalChecked();
-  value = object.As<v8::Object>()
-              ->ObjectProtoToString(context.local())
-              .ToLocalChecked();
-  CHECK(value->IsString() &&
-        value->Equals(context.local(), v8_str("[object Object]")).FromJust());
-}
-
-
-TEST(ObjectProtoToStringES6) {
-  LocalContext context;
-  v8::Isolate* isolate = CcTest::isolate();
-  v8::HandleScope scope(isolate);
-  Local<v8::FunctionTemplate> templ = v8::FunctionTemplate::New(isolate);
-  templ->SetClassName(v8_str("MyClass"));
-
-  Local<String> customized_tostring = v8_str("customized toString");
-
-  // Replace Object.prototype.toString
-  CompileRun(
-      "Object.prototype.toString = function() {"
-      "  return 'customized toString';"
-      "}");
-
-  // Normal ToString call should call replaced Object.prototype.toString
-  Local<v8::Object> instance = templ->GetFunction(context.local())
-                                   .ToLocalChecked()
-                                   ->NewInstance(context.local())
-                                   .ToLocalChecked();
-  Local<String> value = instance->ToString(context.local()).ToLocalChecked();
-  CHECK(value->IsString() &&
-        value->Equals(context.local(), customized_tostring).FromJust());
-
-  // ObjectProtoToString should not call replace toString function.
-  value = instance->ObjectProtoToString(context.local()).ToLocalChecked();
-  CHECK(value->IsString() &&
-        value->Equals(context.local(), v8_str("[object MyClass]")).FromJust());
 
   // Check global
   value =
@@ -12723,9 +12679,48 @@ TEST(ObjectProtoToStringES6) {
               .ToLocalChecked();
   CHECK(value->IsString() &&
         value->Equals(context.local(), v8_str("[object Object]")).FromJust());
+}
 
-  // Check that ES6 semantics using @@toStringTag work
+
+TEST(ObjectProtoToStringES6) {
+  LocalContext context;
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope scope(isolate);
+
+  // Check that ES6 semantics using @@toStringTag work.
   Local<v8::Symbol> toStringTag = v8::Symbol::GetToStringTag(isolate);
+
+  Local<v8::FunctionTemplate> templ = v8::FunctionTemplate::New(isolate);
+  templ->SetClassName(v8_str("MyClass"));
+  templ->PrototypeTemplate()->Set(
+      toStringTag, v8_str("MyClassToStringTag"),
+      static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontEnum));
+
+  Local<String> customized_tostring = v8_str("customized toString");
+
+  // Replace Object.prototype.toString
+  CompileRun(R"(
+      Object.prototype.toString = function() {
+        return 'customized toString';
+      })");
+
+  // Normal ToString call should call replaced Object.prototype.toString
+  Local<v8::Object> instance = templ->GetFunction(context.local())
+                                   .ToLocalChecked()
+                                   ->NewInstance(context.local())
+                                   .ToLocalChecked();
+  Local<String> value = instance->ToString(context.local()).ToLocalChecked();
+  CHECK(value->IsString() &&
+        value->Equals(context.local(), customized_tostring).FromJust());
+
+  // ObjectProtoToString should not call replace toString function. Instead it
+  // should look at the @@toStringTag property.
+  value = instance->ObjectProtoToString(context.local()).ToLocalChecked();
+  CHECK(value->IsString() &&
+        value->Equals(context.local(), v8_str("[object MyClassToStringTag]"))
+            .FromJust());
+
+  Local<Value> object;
 
 #define TEST_TOSTRINGTAG(type, tag, expected)                              \
   do {                                                                     \
@@ -14627,10 +14622,10 @@ THREADED_TEST(MorphCompositeStringTest) {
     CHECK(lhs->IsOneByte());
     CHECK(rhs->IsOneByte());
 
-    i::String ilhs = *v8::Utils::OpenHandle(*lhs);
-    i::String irhs = *v8::Utils::OpenHandle(*rhs);
-    MorphAString(ilhs, &one_byte_resource, &uc16_resource);
-    MorphAString(irhs, &one_byte_resource, &uc16_resource);
+    i::Handle<i::String> ilhs = v8::Utils::OpenHandle(*lhs);
+    i::Handle<i::String> irhs = v8::Utils::OpenHandle(*rhs);
+    MorphAString(*ilhs, &one_byte_resource, &uc16_resource);
+    MorphAString(*irhs, &one_byte_resource, &uc16_resource);
 
     // This should UTF-8 without flattening, since everything is ASCII.
     Local<String> cons =
@@ -14675,14 +14670,14 @@ THREADED_TEST(MorphCompositeStringTest) {
               .FromJust());
 
     // This avoids the GC from trying to free a stack allocated resource.
-    if (ilhs.IsExternalOneByteString())
-      i::ExternalOneByteString::cast(ilhs).SetResource(i_isolate, nullptr);
+    if (ilhs->IsExternalOneByteString())
+      i::ExternalOneByteString::cast(*ilhs).SetResource(i_isolate, nullptr);
     else
-      i::ExternalTwoByteString::cast(ilhs).SetResource(i_isolate, nullptr);
-    if (irhs.IsExternalOneByteString())
-      i::ExternalOneByteString::cast(irhs).SetResource(i_isolate, nullptr);
+      i::ExternalTwoByteString::cast(*ilhs).SetResource(i_isolate, nullptr);
+    if (irhs->IsExternalOneByteString())
+      i::ExternalOneByteString::cast(*irhs).SetResource(i_isolate, nullptr);
     else
-      i::ExternalTwoByteString::cast(irhs).SetResource(i_isolate, nullptr);
+      i::ExternalTwoByteString::cast(*irhs).SetResource(i_isolate, nullptr);
   }
   i::DeleteArray(two_byte_string);
 }
@@ -17882,6 +17877,20 @@ TEST(GCCallbacks) {
   isolate->RemoveGCEpilogueCallback(EpilogueCallbackAlloc);
 }
 
+namespace {
+
+void AssertOneByteConsContainsTwoByteExternal(i::Handle<i::String> maybe_cons,
+                                              i::Handle<i::String> external) {
+  CHECK(maybe_cons->IsOneByteRepresentation());
+  CHECK(maybe_cons->IsConsString());
+  i::ConsString cons = i::ConsString::cast(*maybe_cons);
+  CHECK(cons.IsFlat());
+  CHECK(cons.first() == *external);
+  CHECK(cons.first().IsTwoByteRepresentation());
+  CHECK(cons.first().IsExternalString());
+}
+
+}  // namespace
 
 THREADED_TEST(TwoByteStringInOneByteCons) {
   // See Chromium issue 47824.
@@ -17896,10 +17905,12 @@ THREADED_TEST(TwoByteStringInOneByteCons) {
 
   Local<Value> indexof = CompileRun("str2.indexOf('els')");
   Local<Value> lastindexof = CompileRun("str2.lastIndexOf('dab')");
+  Local<Value> second_char = CompileRun("str2[1]");
 
   CHECK(result->IsString());
   i::Handle<i::String> string = v8::Utils::OpenHandle(String::Cast(*result));
   int length = string->length();
+  CHECK(string->IsConsString());
   CHECK(string->IsOneByteRepresentation());
 
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(context->GetIsolate());
@@ -17920,57 +17931,74 @@ THREADED_TEST(TwoByteStringInOneByteCons) {
 
   CHECK(flat_string->IsTwoByteRepresentation());
 
-  // If the cons string has been short-circuited, skip the following checks.
-  if (!string.is_identical_to(flat_string)) {
-    // At this point, we should have a Cons string which is flat and one-byte,
-    // with a first half that is a two-byte string (although it only contains
-    // one-byte characters). This is a valid sequence of steps, and it can
-    // happen in real pages.
-    CHECK(string->IsOneByteRepresentation());
-    i::ConsString cons = i::ConsString::cast(*string);
-    CHECK_EQ(0, cons.second().length());
-    CHECK(cons.first().IsTwoByteRepresentation());
-  }
+  // At this point, we should have a Cons string which is flat and one-byte,
+  // with a first half that is a two-byte string (although it only contains
+  // one-byte characters). This is a valid sequence of steps, and it can
+  // happen in real pages.
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   // Check that some string operations work.
 
   // Atom RegExp.
   Local<Value> reresult = CompileRun("str2.match(/abel/g).length;");
   CHECK_EQ(6, reresult->Int32Value(context.local()).FromJust());
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   // Nonatom RegExp.
   reresult = CompileRun("str2.match(/abe./g).length;");
   CHECK_EQ(6, reresult->Int32Value(context.local()).FromJust());
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   reresult = CompileRun("str2.search(/bel/g);");
   CHECK_EQ(1, reresult->Int32Value(context.local()).FromJust());
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   reresult = CompileRun("str2.search(/be./g);");
   CHECK_EQ(1, reresult->Int32Value(context.local()).FromJust());
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   ExpectTrue("/bel/g.test(str2);");
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   ExpectTrue("/be./g.test(str2);");
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   reresult = CompileRun("/bel/g.exec(str2);");
   CHECK(!reresult->IsNull());
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   reresult = CompileRun("/be./g.exec(str2);");
   CHECK(!reresult->IsNull());
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   ExpectString("str2.substring(2, 10);", "elspenda");
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   ExpectString("str2.substring(2, 20);", "elspendabelabelspe");
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   ExpectString("str2.charAt(2);", "e");
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   ExpectObject("str2.indexOf('els');", indexof);
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   ExpectObject("str2.lastIndexOf('dab');", lastindexof);
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
+
+  // crbug.com/1088179. Fill the single character string cache, then run split.
+  i_isolate->factory()->LookupSingleCharacterStringFromCode(0);
+  for (size_t i = 0; i < std::strlen(init_code); i++) {
+    i_isolate->factory()->LookupSingleCharacterStringFromCode(init_code[i]);
+  }
+  ExpectObject("str2.split('')[1]", second_char);
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
 
   reresult = CompileRun("str2.charCodeAt(2);");
   CHECK_EQ(static_cast<int32_t>('e'),
            reresult->Int32Value(context.local()).FromJust());
+  AssertOneByteConsContainsTwoByteExternal(string, flat_string);
+
   // This avoids the GC from trying to free stack allocated resources.
   i::Handle<i::ExternalTwoByteString>::cast(flat_string)
       ->SetResource(i_isolate, nullptr);
@@ -19365,6 +19393,52 @@ TEST(ModifyCodeGenFromStrings) {
   CHECK(result.IsEmpty());
   CHECK(try_catch.HasCaught());
   try_catch.Reset();
+}
+
+v8::ModifyCodeGenerationFromStringsResult RejectStringsIncrementNumbers(
+    Local<Context> context, Local<Value> source) {
+  if (source->IsString()) {
+    return {false, v8::MaybeLocal<String>()};
+  }
+
+  Local<v8::Number> number;
+  if (!source->ToNumber(context).ToLocal(&number)) {
+    return {true, v8::MaybeLocal<String>()};
+  }
+
+  Local<v8::String> incremented =
+      String::NewFromUtf8(context->GetIsolate(),
+                          std::to_string(number->Value() + 1).c_str(),
+                          v8::NewStringType::kNormal)
+          .ToLocalChecked();
+
+  return {true, incremented};
+}
+
+TEST(AllowFromStringsOrModifyCodegen) {
+  LocalContext context;
+  v8::HandleScope scope(context->GetIsolate());
+  context->GetIsolate()->SetModifyCodeGenerationFromStringsCallback(
+      &RejectStringsIncrementNumbers);
+
+  context->AllowCodeGenerationFromStrings(false);
+
+  TryCatch try_catch(CcTest::isolate());
+  Local<Value> result = CompileRun("eval('40+2')");
+  CHECK(result.IsEmpty());
+  CHECK(try_catch.HasCaught());
+  try_catch.Reset();
+
+  result = CompileRun("eval(42)");
+  CHECK_EQ(43, result->Int32Value(context.local()).FromJust());
+
+  context->AllowCodeGenerationFromStrings(true);
+
+  result = CompileRun("eval('40+2')");
+  CHECK_EQ(42, result->Int32Value(context.local()).FromJust());
+
+  result = CompileRun("eval(42)");
+  CHECK_EQ(43, result->Int32Value(context.local()).FromJust());
 }
 
 TEST(SetErrorMessageForCodeGenFromStrings) {
@@ -21707,11 +21781,10 @@ THREADED_TEST(FunctionNew) {
   CHECK(v8::Integer::New(isolate, 17)->Equals(env.local(), result).FromJust());
   // Serial number should be invalid => should not be cached.
   auto serial_number =
-      i::Smi::cast(i::Handle<i::JSFunction>::cast(v8::Utils::OpenHandle(*func))
-                       ->shared()
-                       .get_api_func_data()
-                       .serial_number())
-          .value();
+      i::Handle<i::JSFunction>::cast(v8::Utils::OpenHandle(*func))
+          ->shared()
+          .get_api_func_data()
+          .serial_number();
   CHECK_EQ(i::FunctionTemplateInfo::kInvalidSerialNumber, serial_number);
 
   // Verify that each Function::New creates a new function instance
@@ -23947,6 +24020,8 @@ TEST(CreateSyntheticModule) {
   CHECK_EQ(i_module->export_names().length(), 1);
   CHECK(i::String::cast(i_module->export_names().get(0)).Equals(*default_name));
   CHECK_EQ(i_module->status(), i::Module::kInstantiated);
+  CHECK(module->IsSyntheticModule());
+  CHECK(!module->IsSourceTextModule());
 }
 
 TEST(CreateSyntheticModuleGC) {
@@ -24464,8 +24539,6 @@ TEST(TurboAsmDisablesDetach) {
       "}"
       "var buffer = new ArrayBuffer(4096);"
       "var module = Module(this, {}, buffer);"
-      "%PrepareFunctionForOptimization(module.load);"
-      "%OptimizeFunctionOnNextCall(module.load);"
       "module.load();"
       "buffer";
 
@@ -24481,8 +24554,6 @@ TEST(TurboAsmDisablesDetach) {
       "}"
       "var buffer = new ArrayBuffer(4096);"
       "var module = Module(this, {}, buffer);"
-      "%PrepareFunctionForOptimization(module.store);"
-      "%OptimizeFunctionOnNextCall(module.store);"
       "module.store();"
       "buffer";
 
@@ -25734,7 +25805,6 @@ void HostInitializeImportMetaObjectCallbackStatic(Local<Context> context,
                                                   Local<Module> module,
                                                   Local<Object> meta) {
   CHECK(!module.IsEmpty());
-
   meta->CreateDataProperty(context, v8_str("foo"), v8_str("bar")).ToChecked();
 }
 
@@ -25758,10 +25828,9 @@ TEST(ImportMeta) {
   v8::ScriptCompiler::Source source(source_text, origin);
   Local<Module> module =
       v8::ScriptCompiler::CompileModule(isolate, &source).ToLocalChecked();
-  i::Handle<i::Object> meta =
-      i_isolate->RunHostInitializeImportMetaObjectCallback(
-          i::Handle<i::SourceTextModule>::cast(v8::Utils::OpenHandle(*module)));
-  CHECK(meta->IsJSObject());
+  i::Handle<i::JSObject> meta = i::SourceTextModule::GetImportMeta(
+      i_isolate,
+      i::Handle<i::SourceTextModule>::cast(v8::Utils::OpenHandle(*module)));
   Local<Object> meta_obj = Local<Object>::Cast(v8::Utils::ToLocal(meta));
   CHECK(meta_obj->Get(context.local(), v8_str("foo"))
             .ToLocalChecked()
@@ -25839,6 +25908,47 @@ TEST(ModuleGetUnboundModuleScript) {
     i::Handle<i::Object> s2 = v8::Utils::OpenHandle(*sfi_after_instantiation);
     CHECK_EQ(*s1, *s2);
   }
+}
+
+TEST(ModuleScriptId) {
+  LocalContext context;
+  v8::Isolate* isolate = context->GetIsolate();
+  v8::HandleScope scope(isolate);
+
+  Local<String> url = v8_str("www.google.com");
+  Local<String> source_text = v8_str("export default 5; export const a = 10;");
+  v8::ScriptOrigin origin(url, Local<v8::Integer>(), Local<v8::Integer>(),
+                          Local<v8::Boolean>(), Local<v8::Integer>(),
+                          Local<v8::Value>(), Local<v8::Boolean>(),
+                          Local<v8::Boolean>(), True(isolate));
+  v8::ScriptCompiler::Source source(source_text, origin);
+  Local<Module> module =
+      v8::ScriptCompiler::CompileModule(isolate, &source).ToLocalChecked();
+  int id_before_instantiation = module->ScriptId();
+  module->InstantiateModule(context.local(), UnexpectedModuleResolveCallback)
+      .ToChecked();
+  int id_after_instantiation = module->ScriptId();
+
+  CHECK_EQ(id_before_instantiation, id_after_instantiation);
+  CHECK_NE(id_before_instantiation, v8::UnboundScript::kNoScriptId);
+}
+
+TEST(ModuleIsSourceTextModule) {
+  LocalContext context;
+  v8::Isolate* isolate = context->GetIsolate();
+  v8::HandleScope scope(isolate);
+
+  Local<String> url = v8_str("www.google.com");
+  Local<String> source_text = v8_str("export default 5; export const a = 10;");
+  v8::ScriptOrigin origin(url, Local<v8::Integer>(), Local<v8::Integer>(),
+                          Local<v8::Boolean>(), Local<v8::Integer>(),
+                          Local<v8::Value>(), Local<v8::Boolean>(),
+                          Local<v8::Boolean>(), True(isolate));
+  v8::ScriptCompiler::Source source(source_text, origin);
+  Local<Module> module =
+      v8::ScriptCompiler::CompileModule(isolate, &source).ToLocalChecked();
+  CHECK(module->IsSourceTextModule());
+  CHECK(!module->IsSyntheticModule());
 }
 
 TEST(GlobalTemplateWithDoubleProperty) {
@@ -26890,8 +27000,8 @@ static void CallIsolate2(const v8::FunctionCallbackInfo<v8::Value>& args) {
       v8::Local<v8::Context>::New(isolate_2, context_2);
   v8::Context::Scope context_scope(context);
   reinterpret_cast<i::Isolate*>(isolate_2)->heap()->CollectAllGarbage(
-      i::Heap::kNoGCFlags, i::GarbageCollectionReason::kTesting,
-      v8::kGCCallbackFlagForced);
+      i::Heap::kForcedGC, i::GarbageCollectionReason::kTesting,
+      v8::kNoGCCallbackFlags);
   CompileRun("f2() //# sourceURL=isolate2b");
 }
 
@@ -27203,6 +27313,44 @@ void CallWithMoreArguments() {
   // Passing too many arguments should just ignore the extra ones.
   CHECK_EQ(checker.result, ApiNumberChecker<int32_t>::kFastCalled);
 }
+
+class TestCFunctionInfo : public v8::CFunctionInfo {
+  const v8::CTypeInfo& ReturnInfo() const override {
+    static v8::CTypeInfo return_info =
+        v8::CTypeInfo::FromCType(v8::CTypeInfo::Type::kVoid);
+    return return_info;
+  }
+
+  unsigned int ArgumentCount() const override { return 2; }
+
+  const v8::CTypeInfo& ArgumentInfo(unsigned int index) const override {
+    static v8::CTypeInfo type_info0 =
+        v8::CTypeInfo::FromCType(v8::CTypeInfo::Type::kUnwrappedApiObject);
+    static v8::CTypeInfo type_info1 =
+        v8::CTypeInfo::FromCType(v8::CTypeInfo::Type::kBool);
+    switch (index) {
+      case 0:
+        return type_info0;
+      case 1:
+        return type_info1;
+      default:
+        UNREACHABLE();
+    }
+  }
+};
+
+void CheckDynamicTypeInfo() {
+  LocalContext env;
+
+  static TestCFunctionInfo type_info;
+  v8::CFunction c_func =
+      v8::CFunction::Make(ApiNumberChecker<bool>::CheckArgFast, &type_info);
+  CHECK_EQ(c_func.ArgumentCount(), 2);
+  CHECK_EQ(c_func.ArgumentInfo(0).GetType(),
+           v8::CTypeInfo::Type::kUnwrappedApiObject);
+  CHECK_EQ(c_func.ArgumentInfo(1).GetType(), v8::CTypeInfo::Type::kBool);
+  CHECK_EQ(c_func.ReturnInfo().GetType(), v8::CTypeInfo::Type::kVoid);
+}
 }  // namespace
 
 namespace v8 {
@@ -27318,6 +27466,8 @@ TEST(FastApiCalls) {
   // Wrong number of arguments
   CallWithLessArguments();
   CallWithMoreArguments();
+
+  CheckDynamicTypeInfo();
 
   // TODO(mslekova): Add corner cases for 64-bit values.
   // TODO(mslekova): Add main cases for float and double.

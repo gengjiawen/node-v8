@@ -14,6 +14,7 @@
 #include "src/handles/maybe-handles.h"
 #include "src/heap/factory-inl.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/memory-chunk.h"
 #include "src/ic/ic.h"
 #include "src/init/bootstrapper.h"
 #include "src/logging/counters.h"
@@ -70,6 +71,8 @@
 #include "src/strings/string-stream.h"
 #include "src/utils/ostreams.h"
 #include "src/wasm/wasm-objects.h"
+#include "torque-generated/exported-class-definitions-tq-inl.h"
+#include "torque-generated/exported-class-definitions-tq.h"
 
 namespace v8 {
 namespace internal {
@@ -404,19 +407,6 @@ String JSReceiver::class_name() {
   if (IsJSWeakSet()) return roots.WeakSet_string();
   if (IsJSGlobalProxy()) return roots.global_string();
 
-  Object maybe_constructor = map().GetConstructor();
-  if (maybe_constructor.IsJSFunction()) {
-    JSFunction constructor = JSFunction::cast(maybe_constructor);
-    if (constructor.shared().IsApiFunction()) {
-      maybe_constructor = constructor.shared().get_api_func_data();
-    }
-  }
-
-  if (maybe_constructor.IsFunctionTemplateInfo()) {
-    FunctionTemplateInfo info = FunctionTemplateInfo::cast(maybe_constructor);
-    if (info.class_name().IsString()) return String::cast(info.class_name());
-  }
-
   return roots.Object_string();
 }
 
@@ -439,12 +429,6 @@ std::pair<MaybeHandle<JSFunction>, Handle<String>> GetConstructorHelper(
           !name.Equals(ReadOnlyRoots(isolate).Object_string())) {
         return std::make_pair(handle(constructor, isolate),
                               handle(name, isolate));
-      }
-    } else if (maybe_constructor.IsFunctionTemplateInfo()) {
-      FunctionTemplateInfo info = FunctionTemplateInfo::cast(maybe_constructor);
-      if (info.class_name().IsString()) {
-        return std::make_pair(MaybeHandle<JSFunction>(),
-                              handle(String::cast(info.class_name()), isolate));
       }
     }
   }
@@ -2140,8 +2124,6 @@ int JSObject::GetHeaderSize(InstanceType type,
       return JSWeakRef::kHeaderSize;
     case JS_FINALIZATION_REGISTRY_TYPE:
       return JSFinalizationRegistry::kHeaderSize;
-    case JS_FINALIZATION_REGISTRY_CLEANUP_ITERATOR_TYPE:
-      return JSFinalizationRegistryCleanupIterator::kHeaderSize;
     case JS_WEAK_MAP_TYPE:
       return JSWeakMap::kHeaderSize;
     case JS_WEAK_SET_TYPE:
@@ -4413,24 +4395,36 @@ void InvalidateOnePrototypeValidityCellInternal(Map map) {
 }
 
 void InvalidatePrototypeChainsInternal(Map map) {
-  InvalidateOnePrototypeValidityCellInternal(map);
+  // We handle linear prototype chains by looping, and multiple children
+  // by recursion, in order to reduce the likelihood of running into stack
+  // overflows. So, conceptually, the outer loop iterates the depth of the
+  // prototype tree, and the inner loop iterates the breadth of a node.
+  Map next_map;
+  for (; !map.is_null(); map = next_map, next_map = Map()) {
+    InvalidateOnePrototypeValidityCellInternal(map);
 
-  Object maybe_proto_info = map.prototype_info();
-  if (!maybe_proto_info.IsPrototypeInfo()) return;
-  PrototypeInfo proto_info = PrototypeInfo::cast(maybe_proto_info);
-  if (!proto_info.prototype_users().IsWeakArrayList()) {
-    return;
-  }
-  WeakArrayList prototype_users =
-      WeakArrayList::cast(proto_info.prototype_users());
-  // For now, only maps register themselves as users.
-  for (int i = PrototypeUsers::kFirstIndex; i < prototype_users.length(); ++i) {
-    HeapObject heap_object;
-    if (prototype_users.Get(i)->GetHeapObjectIfWeak(&heap_object) &&
-        heap_object.IsMap()) {
-      // Walk the prototype chain (backwards, towards leaf objects) if
-      // necessary.
-      InvalidatePrototypeChainsInternal(Map::cast(heap_object));
+    Object maybe_proto_info = map.prototype_info();
+    if (!maybe_proto_info.IsPrototypeInfo()) return;
+    PrototypeInfo proto_info = PrototypeInfo::cast(maybe_proto_info);
+    if (!proto_info.prototype_users().IsWeakArrayList()) {
+      return;
+    }
+    WeakArrayList prototype_users =
+        WeakArrayList::cast(proto_info.prototype_users());
+    // For now, only maps register themselves as users.
+    for (int i = PrototypeUsers::kFirstIndex; i < prototype_users.length();
+         ++i) {
+      HeapObject heap_object;
+      if (prototype_users.Get(i)->GetHeapObjectIfWeak(&heap_object) &&
+          heap_object.IsMap()) {
+        // Walk the prototype chain (backwards, towards leaf objects) if
+        // necessary.
+        if (next_map.is_null()) {
+          next_map = Map::cast(heap_object);
+        } else {
+          InvalidatePrototypeChainsInternal(Map::cast(heap_object));
+        }
+      }
     }
   }
 }
@@ -4509,14 +4503,13 @@ Maybe<bool> JSObject::SetPrototype(Handle<JSObject> object,
         NewTypeError(MessageTemplate::kImmutablePrototypeSet, object));
   }
 
-  // From 8.6.2 Object Internal Methods
-  // ...
-  // In addition, if [[Extensible]] is false the value of the [[Class]] and
-  // [[Prototype]] internal properties of the object may not be modified.
-  // ...
-  // Implementation specific extensions that modify [[Class]], [[Prototype]]
-  // or [[Extensible]] must not violate the invariants defined in the preceding
-  // paragraph.
+  // From 6.1.7.3 Invariants of the Essential Internal Methods
+  //
+  // [[SetPrototypeOf]] ( V )
+  // * ...
+  // * If target is non-extensible, [[SetPrototypeOf]] must return false,
+  //   unless V is the SameValue as the target's observed [[GetPrototypeOf]]
+  //   value.
   if (!all_extensible) {
     RETURN_FAILURE(isolate, should_throw,
                    NewTypeError(MessageTemplate::kNonExtensibleProto, object));
@@ -4552,7 +4545,6 @@ Maybe<bool> JSObject::SetPrototype(Handle<JSObject> object,
 
 // static
 void JSObject::SetImmutableProto(Handle<JSObject> object) {
-  DCHECK(!object->IsAccessCheckNeeded());  // Never called from JS
   Handle<Map> map(object->map(), object->GetIsolate());
 
   // Nothing to do if prototype is already set.
@@ -5014,9 +5006,10 @@ void JSFunction::EnsureClosureFeedbackCellArray(Handle<JSFunction> function) {
 }
 
 // static
-void JSFunction::EnsureFeedbackVector(Handle<JSFunction> function) {
+void JSFunction::EnsureFeedbackVector(Handle<JSFunction> function,
+                                      IsCompiledScope* is_compiled_scope) {
   Isolate* const isolate = function->GetIsolate();
-  DCHECK(function->shared().is_compiled());
+  DCHECK(is_compiled_scope->is_compiled());
   DCHECK(function->shared().HasFeedbackMetadata());
   if (function->has_feedback_vector()) return;
   if (function->shared().HasAsmWasmData()) return;
@@ -5027,8 +5020,8 @@ void JSFunction::EnsureFeedbackVector(Handle<JSFunction> function) {
   EnsureClosureFeedbackCellArray(function);
   Handle<ClosureFeedbackCellArray> closure_feedback_cell_array =
       handle(function->closure_feedback_cell_array(), isolate);
-  Handle<HeapObject> feedback_vector =
-      FeedbackVector::New(isolate, shared, closure_feedback_cell_array);
+  Handle<HeapObject> feedback_vector = FeedbackVector::New(
+      isolate, shared, closure_feedback_cell_array, is_compiled_scope);
   // EnsureClosureFeedbackCellArray should handle the special case where we need
   // to allocate a new feedback cell. Please look at comment in that function
   // for more details.
@@ -5039,7 +5032,8 @@ void JSFunction::EnsureFeedbackVector(Handle<JSFunction> function) {
 }
 
 // static
-void JSFunction::InitializeFeedbackCell(Handle<JSFunction> function) {
+void JSFunction::InitializeFeedbackCell(Handle<JSFunction> function,
+                                        IsCompiledScope* is_compiled_scope) {
   Isolate* const isolate = function->GetIsolate();
 
   if (function->has_feedback_vector()) {
@@ -5057,7 +5051,7 @@ void JSFunction::InitializeFeedbackCell(Handle<JSFunction> function) {
   if (FLAG_always_opt) needs_feedback_vector = true;
 
   if (needs_feedback_vector) {
-    EnsureFeedbackVector(function);
+    EnsureFeedbackVector(function, is_compiled_scope);
   } else {
     EnsureClosureFeedbackCellArray(function);
   }
@@ -5179,8 +5173,16 @@ void JSFunction::EnsureHasInitialMap(Handle<JSFunction> function) {
   if (function->has_initial_map()) return;
   Isolate* isolate = function->GetIsolate();
 
-  // First create a new map with the size and number of in-object properties
-  // suggested by the function.
+  int expected_nof_properties =
+      CalculateExpectedNofProperties(isolate, function);
+
+  // {CalculateExpectedNofProperties} can have had the side effect of creating
+  // the initial map (e.g. it could have triggered an optimized compilation
+  // whose dependency installation reentered {EnsureHasInitialMap}).
+  if (function->has_initial_map()) return;
+
+  // Create a new map with the size and number of in-object properties suggested
+  // by the function.
   InstanceType instance_type;
   if (IsResumableFunction(function->shared().kind())) {
     instance_type = IsAsyncGeneratorFunction(function->shared().kind())
@@ -5192,8 +5194,6 @@ void JSFunction::EnsureHasInitialMap(Handle<JSFunction> function) {
 
   int instance_size;
   int inobject_properties;
-  int expected_nof_properties =
-      CalculateExpectedNofProperties(isolate, function);
   CalculateInstanceSizeHelper(instance_type, false, 0, expected_nof_properties,
                               &instance_size, &inobject_properties);
 
@@ -5589,13 +5589,13 @@ int JSFunction::CalculateExpectedNofProperties(Isolate* isolate,
     // The super constructor should be compiled for the number of expected
     // properties to be available.
     Handle<SharedFunctionInfo> shared(func->shared(), isolate);
-    IsCompiledScope is_compiled_scope(shared->is_compiled_scope());
+    IsCompiledScope is_compiled_scope(shared->is_compiled_scope(isolate));
     if (is_compiled_scope.is_compiled() ||
         Compiler::Compile(func, Compiler::CLEAR_EXCEPTION,
                           &is_compiled_scope)) {
       DCHECK(shared->is_compiled());
       int count = shared->expected_nof_properties();
-      // Check that the estimate is sane.
+      // Check that the estimate is sensible.
       if (expected_nof_properties <= JSObject::kMaxInObjectProperties - count) {
         expected_nof_properties += count;
       } else {
@@ -5741,18 +5741,24 @@ double JSDate::CurrentTimeValue(Isolate* isolate) {
 }
 
 // static
-Address JSDate::GetField(Address raw_object, Address smi_index) {
+Address JSDate::GetField(Isolate* isolate, Address raw_object,
+                         Address smi_index) {
+  // Called through CallCFunction.
+  DisallowHeapAllocation no_gc;
+  DisallowHandleAllocation no_handles;
+  DisallowJavascriptExecution no_js(isolate);
+
   Object object(raw_object);
   Smi index(smi_index);
   return JSDate::cast(object)
-      .DoGetField(static_cast<FieldIndex>(index.value()))
+      .DoGetField(isolate, static_cast<FieldIndex>(index.value()))
       .ptr();
 }
 
-Object JSDate::DoGetField(FieldIndex index) {
+Object JSDate::DoGetField(Isolate* isolate, FieldIndex index) {
   DCHECK_NE(index, kDateValue);
 
-  DateCache* date_cache = GetIsolate()->date_cache();
+  DateCache* date_cache = isolate->date_cache();
 
   if (index < kFirstUncachedField) {
     Object stamp = cache_stamp();
@@ -5809,7 +5815,6 @@ Object JSDate::GetUTCField(FieldIndex index, double value,
   int64_t time_ms = static_cast<int64_t>(value);
 
   if (index == kTimezoneOffset) {
-    GetIsolate()->CountUsage(v8::Isolate::kDateGetTimezoneOffset);
     return Smi::FromInt(date_cache->TimezoneOffset(time_ms));
   }
 

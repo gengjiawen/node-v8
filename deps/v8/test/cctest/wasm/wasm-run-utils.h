@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
 #include <array>
 #include <memory>
 
@@ -27,7 +28,6 @@
 #include "src/wasm/local-decl-encoder.h"
 #include "src/wasm/wasm-code-manager.h"
 #include "src/wasm/wasm-external-refs.h"
-#include "src/wasm/wasm-interpreter.h"
 #include "src/wasm/wasm-js.h"
 #include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-objects-inl.h"
@@ -36,12 +36,12 @@
 #include "src/wasm/wasm-tier.h"
 #include "src/zone/accounting-allocator.h"
 #include "src/zone/zone.h"
-
 #include "test/cctest/cctest.h"
 #include "test/cctest/compiler/call-tester.h"
 #include "test/cctest/compiler/graph-and-builders.h"
 #include "test/cctest/compiler/value-helper.h"
 #include "test/common/wasm/flag-utils.h"
+#include "test/common/wasm/wasm-interpreter.h"
 
 namespace v8 {
 namespace internal {
@@ -73,42 +73,6 @@ using compiler::Node;
   do {                                     \
     byte code[] = {__VA_ARGS__};           \
     r.Build(code, code + arraysize(code)); \
-  } while (false)
-
-template <typename T>
-void AppendSingle(std::vector<byte>* code, T t) {
-  static_assert(std::is_integral<T>::value,
-                "Special types need specializations");
-  code->push_back(t);
-}
-
-// Specialized for WasmOpcode.
-template <>
-void AppendSingle<WasmOpcode>(std::vector<byte>* code, WasmOpcode op);
-
-template <typename... T>
-void Append(std::vector<byte>* code, T... ts) {
-  static_assert(sizeof...(ts) == 0, "Base case for appending bytes to code.");
-}
-
-template <typename First, typename... Rest>
-void Append(std::vector<byte>* code, First first, Rest... rest) {
-  AppendSingle(code, first);
-  Append(code, rest...);
-}
-
-// Like BUILD but pushes code bytes into a std::vector instead of an array
-// initializer. This is useful for opcodes (like SIMD), that are LEB128
-// (variable-sized). We use recursive template instantiations with variadic
-// template arguments, so that the Append calls can handle either bytes or
-// opcodes. AppendSingle is specialized for WasmOpcode, and appends multiple
-// bytes. This allows existing callers to swap out the BUILD macro for BUILD_V
-// macro without changes. Also see https://crbug.com/v8/10258.
-#define BUILD_V(r, ...)                              \
-  do {                                               \
-    std::vector<byte> code;                          \
-    Append(&code, __VA_ARGS__);                      \
-    r.Build(code.data(), code.data() + code.size()); \
   } while (false)
 
 // For tests that must manually import a JSFunction with source code.
@@ -146,12 +110,10 @@ class TestingModuleBuilder {
   }
 
   byte AddSignature(const FunctionSig* sig) {
-    DCHECK_EQ(test_module_->signatures.size(),
-              test_module_->signature_ids.size());
-    test_module_->signatures.push_back(sig);
-    auto canonical_sig_num = test_module_->signature_map.FindOrInsert(*sig);
-    test_module_->signature_ids.push_back(canonical_sig_num);
-    size_t size = test_module_->signatures.size();
+    // TODO(7748): This will need updating for struct/array types support.
+    DCHECK_EQ(test_module_->types.size(), test_module_->signature_ids.size());
+    test_module_->add_signature(sig);
+    size_t size = test_module_->types.size();
     CHECK_GT(127, size);
     return static_cast<byte>(size - 1);
   }
@@ -242,7 +204,7 @@ class TestingModuleBuilder {
     return &test_module_->functions[index];
   }
 
-  WasmInterpreter* interpreter() const { return interpreter_; }
+  WasmInterpreter* interpreter() const { return interpreter_.get(); }
   bool interpret() const { return interpreter_ != nullptr; }
   LowerSimd lower_simd() const { return lower_simd_; }
   Isolate* isolate() const { return isolate_; }
@@ -258,10 +220,13 @@ class TestingModuleBuilder {
 
   void SetExecutable() { native_module_->SetExecutable(true); }
 
-  void TierDown() { native_module_->TierDown(isolate_); }
+  void TierDown() {
+    native_module_->SetTieringState(kTieredDown);
+    native_module_->RecompileForTiering();
+    execution_tier_ = ExecutionTier::kLiftoff;
+  }
 
-  enum AssumeDebugging : bool { kDebug = true, kNoDebug = false };
-  CompilationEnv CreateCompilationEnv(AssumeDebugging = kNoDebug);
+  CompilationEnv CreateCompilationEnv();
 
   ExecutionTier execution_tier() const { return execution_tier_; }
 
@@ -278,7 +243,7 @@ class TestingModuleBuilder {
   byte* mem_start_ = nullptr;
   uint32_t mem_size_ = 0;
   alignas(16) byte globals_data_[kMaxGlobalsSize];
-  WasmInterpreter* interpreter_ = nullptr;
+  std::unique_ptr<WasmInterpreter> interpreter_;
   ExecutionTier execution_tier_;
   Handle<WasmInstanceObject> instance_object_;
   NativeModule* native_module_ = nullptr;
@@ -545,17 +510,16 @@ class WasmRunner : public WasmRunnerBase {
   }
 
   ReturnType CallInterpreter(ParamTypes... p) {
-    WasmInterpreter::Thread* thread = interpreter()->GetThread(0);
-    thread->Reset();
+    interpreter()->Reset();
     std::array<WasmValue, sizeof...(p)> args{{WasmValue(p)...}};
-    thread->InitFrame(function(), args.data());
-    thread->Run();
-    CHECK_GT(thread->NumInterpretedCalls(), 0);
-    if (thread->state() == WasmInterpreter::FINISHED) {
-      WasmValue val = thread->GetReturnValue();
-      possible_nondeterminism_ |= thread->PossibleNondeterminism();
+    interpreter()->InitFrame(function(), args.data());
+    interpreter()->Run();
+    CHECK_GT(interpreter()->NumInterpretedCalls(), 0);
+    if (interpreter()->state() == WasmInterpreter::FINISHED) {
+      WasmValue val = interpreter()->GetReturnValue();
+      possible_nondeterminism_ |= interpreter()->PossibleNondeterminism();
       return val.to<ReturnType>();
-    } else if (thread->state() == WasmInterpreter::TRAPPED) {
+    } else if (interpreter()->state() == WasmInterpreter::TRAPPED) {
       // TODO(titzer): return the correct trap code
       int64_t result = 0xDEADBEEFDEADBEEF;
       return static_cast<ReturnType>(result);
@@ -594,7 +558,7 @@ class WasmRunner : public WasmRunnerBase {
     }
 
     if (builder_.interpret()) {
-      CHECK_GT(builder_.interpreter()->GetThread(0)->NumInterpretedCalls(), 0);
+      CHECK_GT(builder_.interpreter()->NumInterpretedCalls(), 0);
     }
   }
 

@@ -165,43 +165,24 @@ Handle<WasmModuleObject> WasmModuleObject::New(
 Handle<WasmModuleObject> WasmModuleObject::New(
     Isolate* isolate, std::shared_ptr<wasm::NativeModule> native_module,
     Handle<Script> script, Handle<FixedArray> export_wrappers) {
-  const WasmModule* module = native_module->module();
-  const bool uses_liftoff =
-      FLAG_liftoff && native_module->module()->origin == wasm::kWasmOrigin;
-  size_t code_size_estimate =
-      wasm::WasmCodeManager::EstimateNativeModuleCodeSize(module, uses_liftoff);
-  return New(isolate, std::move(native_module), script, export_wrappers,
-             code_size_estimate);
-}
-
-// static
-Handle<WasmModuleObject> WasmModuleObject::New(
-    Isolate* isolate, std::shared_ptr<wasm::NativeModule> native_module,
-    Handle<Script> script, Handle<FixedArray> export_wrappers,
-    size_t code_size_estimate) {
-  const WasmModule* module = native_module->module();
-
-  // Use the given shared {NativeModule}, but increase its reference count by
-  // allocating a new {Managed<T>} that the {WasmModuleObject} references.
-  size_t memory_estimate =
-      code_size_estimate +
-      wasm::WasmCodeManager::EstimateNativeModuleMetaDataSize(module);
-  Handle<Managed<wasm::NativeModule>> managed_native_module =
-      Managed<wasm::NativeModule>::FromSharedPtr(isolate, memory_estimate,
-                                                 std::move(native_module));
-
+  Handle<Managed<wasm::NativeModule>> managed_native_module;
+  if (script->type() == Script::TYPE_WASM) {
+    managed_native_module = handle(
+        Managed<wasm::NativeModule>::cast(script->wasm_managed_native_module()),
+        isolate);
+  } else {
+    const WasmModule* module = native_module->module();
+    size_t memory_estimate =
+        native_module->committed_code_space() +
+        wasm::WasmCodeManager::EstimateNativeModuleMetaDataSize(module);
+    managed_native_module = Managed<wasm::NativeModule>::FromSharedPtr(
+        isolate, memory_estimate, std::move(native_module));
+  }
   Handle<WasmModuleObject> module_object = Handle<WasmModuleObject>::cast(
       isolate->factory()->NewJSObject(isolate->wasm_module_constructor()));
   module_object->set_export_wrappers(*export_wrappers);
-  if (script->type() == Script::TYPE_WASM) {
-    script->set_wasm_breakpoint_infos(
-        ReadOnlyRoots(isolate).empty_fixed_array());
-    script->set_wasm_managed_native_module(*managed_native_module);
-    script->set_wasm_weak_instance_list(
-        ReadOnlyRoots(isolate).empty_weak_array_list());
-  }
-  module_object->set_script(*script);
   module_object->set_managed_native_module(*managed_native_module);
+  module_object->set_script(*script);
   return module_object;
 }
 
@@ -241,9 +222,10 @@ MaybeHandle<String> WasmModuleObject::GetFunctionNameOrNull(
     Isolate* isolate, Handle<WasmModuleObject> module_object,
     uint32_t func_index) {
   DCHECK_LT(func_index, module_object->module()->functions.size());
-  wasm::WireBytesRef name = module_object->module()->function_names.Lookup(
-      wasm::ModuleWireBytes(module_object->native_module()->wire_bytes()),
-      func_index, VectorOf(module_object->module()->export_table));
+  wasm::WireBytesRef name =
+      module_object->module()->lazily_generated_names.LookupFunctionName(
+          wasm::ModuleWireBytes(module_object->native_module()->wire_bytes()),
+          func_index, VectorOf(module_object->module()->export_table));
   if (!name.is_set()) return {};
   return ExtractUtf8StringFromModuleBytes(isolate, module_object, name,
                                           kNoInternalize);
@@ -267,8 +249,9 @@ Vector<const uint8_t> WasmModuleObject::GetRawFunctionName(
     uint32_t func_index) {
   DCHECK_GT(module()->functions.size(), func_index);
   wasm::ModuleWireBytes wire_bytes(native_module()->wire_bytes());
-  wasm::WireBytesRef name_ref = module()->function_names.Lookup(
-      wire_bytes, func_index, VectorOf(module()->export_table));
+  wasm::WireBytesRef name_ref =
+      module()->lazily_generated_names.LookupFunctionName(
+          wire_bytes, func_index, VectorOf(module()->export_table));
   wasm::WasmName name = wire_bytes.GetNameOrNull(name_ref);
   return Vector<const uint8_t>::cast(name);
 }
@@ -278,6 +261,9 @@ Handle<WasmTableObject> WasmTableObject::New(Isolate* isolate,
                                              uint32_t initial, bool has_maximum,
                                              uint32_t maximum,
                                              Handle<FixedArray>* entries) {
+  // TODO(7748): Make this work with other types when spec clears up.
+  CHECK(type.is_nullable());
+
   Handle<FixedArray> backing_store = isolate->factory()->NewFixedArray(initial);
   Object null = ReadOnlyRoots(isolate).null_value();
   for (int i = 0; i < static_cast<int>(initial); ++i) {
@@ -300,7 +286,7 @@ Handle<WasmTableObject> WasmTableObject::New(Isolate* isolate,
   table_obj->set_entries(*backing_store);
   table_obj->set_current_length(initial);
   table_obj->set_maximum_length(*max);
-  table_obj->set_raw_type(static_cast<int>(type.kind()));
+  table_obj->set_raw_type(static_cast<int>(type.heap_representation()));
 
   table_obj->set_dispatch_tables(ReadOnlyRoots(isolate).empty_fixed_array());
   if (entries != nullptr) {
@@ -401,13 +387,9 @@ bool WasmTableObject::IsValidElement(Isolate* isolate,
                                      Handle<WasmTableObject> table,
                                      Handle<Object> entry) {
   // Anyref and exnref tables take everything.
-  if (table->type() == wasm::kWasmAnyRef ||
-      table->type() == wasm::kWasmExnRef) {
+  if (table->type().is_reference_to(wasm::HeapType::kExtern) ||
+      table->type().is_reference_to(wasm::HeapType::kExn)) {
     return true;
-  }
-  // Nullref only takes {null}.
-  if (table->type() == wasm::kWasmNullRef) {
-    return entry->IsNull(isolate);
   }
   // FuncRef tables can store {null}, {WasmExportedFunction}, {WasmJSFunction},
   // or {WasmCapiFunction} objects.
@@ -426,8 +408,8 @@ void WasmTableObject::Set(Isolate* isolate, Handle<WasmTableObject> table,
   Handle<FixedArray> entries(table->entries(), isolate);
   // The FixedArray is addressed with int's.
   int entry_index = static_cast<int>(index);
-  if (table->type() == wasm::kWasmAnyRef ||
-      table->type() == wasm::kWasmExnRef) {
+  if (table->type().is_reference_to(wasm::HeapType::kExtern) ||
+      table->type().is_reference_to(wasm::HeapType::kExn)) {
     entries->set(entry_index, *entry);
     return;
   }
@@ -471,9 +453,9 @@ Handle<Object> WasmTableObject::Get(Isolate* isolate,
 
   Handle<Object> entry(entries->get(entry_index), isolate);
 
-  // First we handle the easy anyref and exnref table case.
-  if (table->type() == wasm::kWasmAnyRef ||
-      table->type() == wasm::kWasmExnRef) {
+  // First we handle the easy externref and exnref table case.
+  if (table->type().is_reference_to(wasm::HeapType::kExtern) ||
+      table->type().is_reference_to(wasm::HeapType::kExn)) {
     return entry;
   }
 
@@ -651,7 +633,7 @@ void WasmTableObject::GetFunctionTableEntry(
     Isolate* isolate, Handle<WasmTableObject> table, int entry_index,
     bool* is_valid, bool* is_null, MaybeHandle<WasmInstanceObject>* instance,
     int* function_index, MaybeHandle<WasmJSFunction>* maybe_js_function) {
-  DCHECK_EQ(table->type(), wasm::kWasmFuncRef);
+  DCHECK(table->type().is_reference_to(wasm::HeapType::kFunc));
   DCHECK_LT(entry_index, table->current_length());
   // We initialize {is_valid} with {true}. We may change it later.
   *is_valid = true;
@@ -873,7 +855,7 @@ void WasmMemoryObject::update_instances(Isolate* isolate,
 int32_t WasmMemoryObject::Grow(Isolate* isolate,
                                Handle<WasmMemoryObject> memory_object,
                                uint32_t pages) {
-  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.wasm"), "GrowMemory");
+  TRACE_EVENT0("v8.wasm", "wasm.GrowMemory");
   Handle<JSArrayBuffer> old_buffer(memory_object->array_buffer(), isolate);
   // Any buffer used as an asmjs memory cannot be detached, and
   // therefore this memory cannot be grown.
@@ -894,18 +876,17 @@ int32_t WasmMemoryObject::Grow(Isolate* isolate,
   std::shared_ptr<BackingStore> backing_store = old_buffer->GetBackingStore();
   if (!backing_store) return -1;
 
-  // Compute new size.
-  size_t new_pages = old_pages + pages;
-
   // Try to handle shared memory first.
   if (old_buffer->is_shared()) {
     if (FLAG_wasm_grow_shared_memory) {
+      base::Optional<size_t> result =
+          backing_store->GrowWasmMemoryInPlace(isolate, pages, maximum_pages);
       // Shared memories can only be grown in place; no copying.
-      if (backing_store->GrowWasmMemoryInPlace(isolate, pages, maximum_pages)) {
-        BackingStore::BroadcastSharedWasmMemoryGrow(isolate, backing_store,
-                                                    new_pages);
+      if (result.has_value()) {
+        BackingStore::BroadcastSharedWasmMemoryGrow(isolate, backing_store);
         // Broadcasting the update should update this memory object too.
         CHECK_NE(*old_buffer, memory_object->array_buffer());
+        size_t new_pages = result.value() + pages;
         // If the allocation succeeded, then this can't possibly overflow:
         size_t new_byte_length = new_pages * wasm::kWasmPageSize;
         // This is a less than check, as it is not guaranteed that the SAB
@@ -914,21 +895,29 @@ int32_t WasmMemoryObject::Grow(Isolate* isolate,
         // It is also possible that a call to Grow was in progress when
         // handling this call.
         CHECK_LE(new_byte_length, memory_object->array_buffer().byte_length());
-        return static_cast<int32_t>(old_pages);  // success
+        // As {old_pages} was read racefully, we return here the synchronized
+        // value provided by {GrowWasmMemoryInPlace}, to provide the atomic
+        // read-modify-write behavior required by the spec.
+        return static_cast<int32_t>(result.value());  // success
       }
     }
     return -1;
   }
 
+  base::Optional<size_t> result =
+      backing_store->GrowWasmMemoryInPlace(isolate, pages, maximum_pages);
   // Try to grow non-shared memory in-place.
-  if (backing_store->GrowWasmMemoryInPlace(isolate, pages, maximum_pages)) {
+  if (result.has_value()) {
     // Detach old and create a new one with the grown backing store.
     old_buffer->Detach(true);
     Handle<JSArrayBuffer> new_buffer =
         isolate->factory()->NewJSArrayBuffer(std::move(backing_store));
     memory_object->update_instances(isolate, new_buffer);
-    return static_cast<int32_t>(old_pages);  // success
+    DCHECK_EQ(result.value(), old_pages);
+    return static_cast<int32_t>(result.value());  // success
   }
+
+  size_t new_pages = old_pages + pages;
   // Try allocating a new backing store and copying.
   std::unique_ptr<BackingStore> new_backing_store =
       backing_store->CopyWasmMemory(isolate, new_pages);
@@ -961,13 +950,13 @@ MaybeHandle<WasmGlobalObject> WasmGlobalObject::New(
     // Disallow GC until all fields have acceptable types.
     DisallowHeapAllocation no_gc;
 
-    global_obj->set_flags(0);
+    global_obj->set_raw_type(0);
     global_obj->set_type(type);
     global_obj->set_offset(offset);
     global_obj->set_is_mutable(is_mutable);
   }
 
-  if (type.IsReferenceType()) {
+  if (type.is_reference_type()) {
     DCHECK(maybe_untagged_buffer.is_null());
     Handle<FixedArray> tagged_buffer;
     if (!maybe_tagged_buffer.ToHandle(&tagged_buffer)) {
@@ -1185,16 +1174,6 @@ const WasmModule* WasmInstanceObject::module() {
   return module_object().module();
 }
 
-Handle<WasmDebugInfo> WasmInstanceObject::GetOrCreateDebugInfo(
-    Handle<WasmInstanceObject> instance) {
-  if (instance->has_debug_info()) {
-    return handle(instance->debug_info(), instance->GetIsolate());
-  }
-  Handle<WasmDebugInfo> new_info = WasmDebugInfo::New(instance);
-  DCHECK(instance->has_debug_info());
-  return new_info;
-}
-
 Handle<WasmInstanceObject> WasmInstanceObject::New(
     Isolate* isolate, Handle<WasmModuleObject> module_object) {
   Handle<JSFunction> instance_cons(
@@ -1240,6 +1219,7 @@ Handle<WasmInstanceObject> WasmInstanceObject::New(
       module_object->native_module()->jump_table_start());
   instance->set_hook_on_function_call_address(
       isolate->debug()->hook_on_function_call_address());
+  instance->set_managed_object_maps(*isolate->factory()->empty_fixed_array());
 
   // Insert the new instance into the scripts weak list of instances. This list
   // is used for breakpoints affecting all instances belonging to the script.
@@ -1472,7 +1452,7 @@ void WasmInstanceObject::ImportWasmJSFunctionIntoTable(
         result.tagged_parameter_slots,
         result.protected_instructions_data.as_vector(),
         result.source_positions.as_vector(), GetCodeKind(result),
-        wasm::ExecutionTier::kNone);
+        wasm::ExecutionTier::kNone, wasm::kNoDebugging);
     wasm::WasmCode* published_code =
         native_module->PublishCode(std::move(wasm_code));
     isolate->counters()->wasm_generated_code_size()->Increment(
@@ -1492,7 +1472,7 @@ void WasmInstanceObject::ImportWasmJSFunctionIntoTable(
 // static
 uint8_t* WasmInstanceObject::GetGlobalStorage(
     Handle<WasmInstanceObject> instance, const wasm::WasmGlobal& global) {
-  DCHECK(!global.type.IsReferenceType());
+  DCHECK(!global.type.is_reference_type());
   if (global.mutability && global.imported) {
     return reinterpret_cast<byte*>(
         instance->imported_mutable_globals()[global.index]);
@@ -1505,7 +1485,7 @@ uint8_t* WasmInstanceObject::GetGlobalStorage(
 std::pair<Handle<FixedArray>, uint32_t>
 WasmInstanceObject::GetGlobalBufferAndIndex(Handle<WasmInstanceObject> instance,
                                             const wasm::WasmGlobal& global) {
-  DCHECK(global.type.IsReferenceType());
+  DCHECK(global.type.is_reference_type());
   Isolate* isolate = instance->GetIsolate();
   if (global.mutability && global.imported) {
     Handle<FixedArray> buffer(
@@ -1523,34 +1503,65 @@ WasmInstanceObject::GetGlobalBufferAndIndex(Handle<WasmInstanceObject> instance,
 MaybeHandle<String> WasmInstanceObject::GetGlobalNameOrNull(
     Isolate* isolate, Handle<WasmInstanceObject> instance,
     uint32_t global_index) {
+  return WasmInstanceObject::GetNameFromImportsAndExportsOrNull(
+      isolate, instance, wasm::ImportExportKindCode::kExternalGlobal,
+      global_index);
+}
+
+// static
+MaybeHandle<String> WasmInstanceObject::GetMemoryNameOrNull(
+    Isolate* isolate, Handle<WasmInstanceObject> instance,
+    uint32_t memory_index) {
+  return WasmInstanceObject::GetNameFromImportsAndExportsOrNull(
+      isolate, instance, wasm::ImportExportKindCode::kExternalMemory,
+      memory_index);
+}
+
+// static
+MaybeHandle<String> WasmInstanceObject::GetTableNameOrNull(
+    Isolate* isolate, Handle<WasmInstanceObject> instance,
+    uint32_t table_index) {
+  return WasmInstanceObject::GetNameFromImportsAndExportsOrNull(
+      isolate, instance, wasm::ImportExportKindCode::kExternalTable,
+      table_index);
+}
+
+// static
+MaybeHandle<String> WasmInstanceObject::GetNameFromImportsAndExportsOrNull(
+    Isolate* isolate, Handle<WasmInstanceObject> instance,
+    wasm::ImportExportKindCode kind, uint32_t index) {
+  DCHECK(kind == wasm::ImportExportKindCode::kExternalGlobal ||
+         kind == wasm::ImportExportKindCode::kExternalMemory ||
+         kind == wasm::ImportExportKindCode::kExternalTable);
   wasm::ModuleWireBytes wire_bytes(
       instance->module_object().native_module()->wire_bytes());
 
   // This is pair of <module_name, field_name>.
   // If field_name is not set then we don't generate a name. Else if module_name
-  // is set then it is imported global. Otherwise it is exported global.
+  // is set then it is an imported one. Otherwise it is an exported one.
   std::pair<wasm::WireBytesRef, wasm::WireBytesRef> name_ref =
-      instance->module()->global_names.Lookup(
-          global_index, VectorOf(instance->module()->import_table),
-          VectorOf(instance->module()->export_table));
+      instance->module()
+          ->lazily_generated_names.LookupNameFromImportsAndExports(
+              kind, index, VectorOf(instance->module()->import_table),
+              VectorOf(instance->module()->export_table));
   if (!name_ref.second.is_set()) return {};
   Vector<const char> field_name = wire_bytes.GetNameOrNull(name_ref.second);
   if (!name_ref.first.is_set()) {
     return isolate->factory()->NewStringFromUtf8(VectorOf(field_name));
   }
   Vector<const char> module_name = wire_bytes.GetNameOrNull(name_ref.first);
-  std::string global_name;
-  global_name.append(module_name.begin(), module_name.end());
-  global_name.append(".");
-  global_name.append(field_name.begin(), field_name.end());
-  return isolate->factory()->NewStringFromUtf8(VectorOf(global_name));
+  std::string full_name;
+  full_name.append(module_name.begin(), module_name.end());
+  full_name.append(".");
+  full_name.append(field_name.begin(), field_name.end());
+  return isolate->factory()->NewStringFromUtf8(VectorOf(full_name));
 }
 
 // static
 wasm::WasmValue WasmInstanceObject::GetGlobalValue(
     Handle<WasmInstanceObject> instance, const wasm::WasmGlobal& global) {
   Isolate* isolate = instance->GetIsolate();
-  if (global.type.IsReferenceType()) {
+  if (global.type.is_reference_type()) {
     Handle<FixedArray> global_buffer;  // The buffer of the global.
     uint32_t global_index = 0;         // The index into the buffer.
     std::tie(global_buffer, global_index) =
@@ -1715,14 +1726,15 @@ uint32_t WasmExceptionPackage::GetEncodedSize(
         DCHECK_EQ(8, ComputeEncodedElementSize(sig->GetParam(i)));
         encoded_size += 8;
         break;
-      case wasm::ValueType::kAnyRef:
-      case wasm::ValueType::kFuncRef:
-      case wasm::ValueType::kNullRef:
-      case wasm::ValueType::kExnRef:
+      case wasm::ValueType::kRef:
+      case wasm::ValueType::kOptRef:
         encoded_size += 1;
         break;
+      case wasm::ValueType::kRtt:
       case wasm::ValueType::kStmt:
       case wasm::ValueType::kBottom:
+      case wasm::ValueType::kI8:
+      case wasm::ValueType::kI16:
         UNREACHABLE();
     }
   }

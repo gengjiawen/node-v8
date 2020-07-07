@@ -156,6 +156,12 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64F64x2Le:
     case kArm64F64x2Qfma:
     case kArm64F64x2Qfms:
+    case kArm64F64x2Pmin:
+    case kArm64F64x2Pmax:
+    case kArm64F64x2RoundUp:
+    case kArm64F64x2RoundDown:
+    case kArm64F64x2RoundTruncate:
+    case kArm64F64x2RoundTiesEven:
     case kArm64F32x4Splat:
     case kArm64F32x4ExtractLane:
     case kArm64F32x4ReplaceLane:
@@ -179,6 +185,12 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64F32x4Le:
     case kArm64F32x4Qfma:
     case kArm64F32x4Qfms:
+    case kArm64F32x4Pmin:
+    case kArm64F32x4Pmax:
+    case kArm64F32x4RoundUp:
+    case kArm64F32x4RoundDown:
+    case kArm64F32x4RoundTruncate:
+    case kArm64F32x4RoundTiesEven:
     case kArm64I64x2Splat:
     case kArm64I64x2ExtractLane:
     case kArm64I64x2ReplaceLane:
@@ -208,6 +220,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64I32x4AddHoriz:
     case kArm64I32x4Sub:
     case kArm64I32x4Mul:
+    case kArm64I32x4Mla:
+    case kArm64I32x4Mls:
     case kArm64I32x4MinS:
     case kArm64I32x4MaxS:
     case kArm64I32x4Eq:
@@ -224,6 +238,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64I32x4GeU:
     case kArm64I32x4Abs:
     case kArm64I32x4BitMask:
+    case kArm64I32x4DotI16x8S:
     case kArm64I16x8Splat:
     case kArm64I16x8ExtractLaneU:
     case kArm64I16x8ExtractLaneS:
@@ -240,6 +255,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64I16x8Sub:
     case kArm64I16x8SubSaturateS:
     case kArm64I16x8Mul:
+    case kArm64I16x8Mla:
+    case kArm64I16x8Mls:
     case kArm64I16x8MinS:
     case kArm64I16x8MaxS:
     case kArm64I16x8Eq:
@@ -272,6 +289,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64I8x16Sub:
     case kArm64I8x16SubSaturateS:
     case kArm64I8x16Mul:
+    case kArm64I8x16Mla:
+    case kArm64I8x16Mls:
     case kArm64I8x16MinS:
     case kArm64I8x16MaxS:
     case kArm64I8x16Eq:
@@ -289,6 +308,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64I8x16RoundingAverageU:
     case kArm64I8x16Abs:
     case kArm64I8x16BitMask:
+    case kArm64S128Const:
     case kArm64S128Zero:
     case kArm64S128Dup:
     case kArm64S128And:
@@ -325,14 +345,14 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64S8x8Reverse:
     case kArm64S8x4Reverse:
     case kArm64S8x2Reverse:
-    case kArm64S1x2AnyTrue:
-    case kArm64S1x2AllTrue:
-    case kArm64S1x4AnyTrue:
-    case kArm64S1x4AllTrue:
-    case kArm64S1x8AnyTrue:
-    case kArm64S1x8AllTrue:
-    case kArm64S1x16AnyTrue:
-    case kArm64S1x16AllTrue:
+    case kArm64V64x2AnyTrue:
+    case kArm64V64x2AllTrue:
+    case kArm64V32x4AnyTrue:
+    case kArm64V32x4AllTrue:
+    case kArm64V16x8AnyTrue:
+    case kArm64V16x8AllTrue:
+    case kArm64V8x16AnyTrue:
+    case kArm64V8x16AllTrue:
     case kArm64TestAndBranch32:
     case kArm64TestAndBranch:
     case kArm64CompareAndBranch32:

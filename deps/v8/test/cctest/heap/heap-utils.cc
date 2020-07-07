@@ -9,6 +9,8 @@
 #include "src/heap/heap-inl.h"
 #include "src/heap/incremental-marking.h"
 #include "src/heap/mark-compact.h"
+#include "src/heap/memory-chunk.h"
+#include "src/heap/safepoint.h"
 #include "test/cctest/cctest.h"
 
 namespace v8 {
@@ -176,6 +178,7 @@ void SimulateIncrementalMarking(i::Heap* heap, bool force_completion) {
     marking->Step(kStepSizeInMs, i::IncrementalMarking::NO_GC_VIA_STACK_GUARD,
                   i::StepOrigin::kV8);
     if (marking->IsReadyToOverApproximateWeakClosure()) {
+      SafepointScope scope(heap);
       marking->FinalizeIncrementally();
     }
   }

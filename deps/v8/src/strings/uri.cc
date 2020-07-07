@@ -10,6 +10,7 @@
 #include "src/strings/char-predicates-inl.h"
 #include "src/strings/string-search.h"
 #include "src/strings/unicode-inl.h"
+#include "src/tracing/trace-event.h"
 
 namespace v8 {
 namespace internal {
@@ -174,6 +175,8 @@ bool IntoOneAndTwoByte(Handle<String> uri, bool is_uri,
 
 MaybeHandle<String> Uri::Decode(Isolate* isolate, Handle<String> uri,
                                 bool is_uri) {
+  TRACE_EVENT0("v8", "V8.DecodeUri");
+
   uri = String::Flatten(isolate, uri);
   std::vector<uint8_t> one_byte_buffer;
   std::vector<uc16> two_byte_buffer;
@@ -278,6 +281,8 @@ void EncodePair(uc16 cc1, uc16 cc2, std::vector<uint8_t>* buffer) {
 
 MaybeHandle<String> Uri::Encode(Isolate* isolate, Handle<String> uri,
                                 bool is_uri) {
+  TRACE_EVENT0("v8", "V8.EncodeUri");
+
   uri = String::Flatten(isolate, uri);
   int uri_length = uri->length();
   std::vector<uint8_t> buffer;
@@ -420,7 +425,7 @@ static MaybeHandle<String> UnescapePrivate(Isolate* isolate,
   int index;
   {
     DisallowHeapAllocation no_allocation;
-    StringSearch<uint8_t, Char> search(isolate, StaticCharVector("%"));
+    StringSearch<uint8_t, Char> search(isolate, StaticOneByteVector("%"));
     index = search.Search(source->GetCharVector<Char>(no_allocation), 0);
     if (index < 0) return source;
   }

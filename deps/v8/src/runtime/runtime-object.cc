@@ -10,6 +10,7 @@
 #include "src/execution/messages.h"
 #include "src/handles/maybe-handles.h"
 #include "src/heap/heap-inl.h"  // For ToBoolean. TODO(jkummerow): Drop.
+#include "src/heap/memory-chunk.h"
 #include "src/init/bootstrapper.h"
 #include "src/logging/counters.h"
 #include "src/objects/hash-table-inl.h"
@@ -916,9 +917,7 @@ RUNTIME_FUNCTION(Runtime_DefineDataPropertyInLiteral) {
     }
   }
 
-  DataPropertyInLiteralFlags flags =
-      static_cast<DataPropertyInLiteralFlag>(flag);
-
+  DataPropertyInLiteralFlags flags(flag);
   PropertyAttributes attrs = (flags & DataPropertyInLiteralFlag::kDontEnum)
                                  ? PropertyAttributes::DONT_ENUM
                                  : PropertyAttributes::NONE;
@@ -989,14 +988,6 @@ RUNTIME_FUNCTION(Runtime_IsJSReceiver) {
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_CHECKED(Object, obj, 0);
   return isolate->heap()->ToBoolean(obj.IsJSReceiver());
-}
-
-RUNTIME_FUNCTION(Runtime_ClassOf) {
-  SealHandleScope shs(isolate);
-  DCHECK_EQ(1, args.length());
-  CONVERT_ARG_CHECKED(Object, obj, 0);
-  if (!obj.IsJSReceiver()) return ReadOnlyRoots(isolate).null_value();
-  return JSReceiver::cast(obj).class_name();
 }
 
 RUNTIME_FUNCTION(Runtime_GetFunctionName) {
@@ -1195,6 +1186,19 @@ RUNTIME_FUNCTION(Runtime_CreateDataProperty) {
   MAYBE_RETURN(JSReceiver::CreateDataProperty(&it, value, Just(kThrowOnError)),
                ReadOnlyRoots(isolate).exception());
   return *value;
+}
+
+RUNTIME_FUNCTION(Runtime_SetOwnPropertyIgnoreAttributes) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(4, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(JSObject, o, 0);
+  CONVERT_ARG_HANDLE_CHECKED(String, key, 1);
+  CONVERT_ARG_HANDLE_CHECKED(Object, value, 2);
+  CONVERT_ARG_HANDLE_CHECKED(Smi, attributes, 3);
+
+  RETURN_RESULT_OR_FAILURE(
+      isolate, JSObject::SetOwnPropertyIgnoreAttributes(
+                   o, key, value, PropertyAttributes(attributes->value())));
 }
 
 RUNTIME_FUNCTION(Runtime_GetOwnPropertyDescriptor) {

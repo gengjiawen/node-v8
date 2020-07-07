@@ -28,9 +28,7 @@ enum InstanceType : uint16_t;
   V(CoverageInfo)                    \
   V(DataObject)                      \
   V(FeedbackMetadata)                \
-  V(FixedDoubleArray)                \
-  V(SeqOneByteString)                \
-  V(SeqTwoByteString)
+  V(FixedDoubleArray)
 
 #define POINTER_VISITOR_ID_LIST(V)     \
   V(AllocationSite)                    \
@@ -38,7 +36,6 @@ enum InstanceType : uint16_t;
   V(Cell)                              \
   V(Code)                              \
   V(CodeDataContainer)                 \
-  V(ConsString)                        \
   V(Context)                           \
   V(DataHandler)                       \
   V(DescriptorArray)                   \
@@ -46,7 +43,6 @@ enum InstanceType : uint16_t;
   V(EphemeronHashTable)                \
   V(FeedbackCell)                      \
   V(FeedbackVector)                    \
-  V(FixedArray)                        \
   V(FreeSpace)                         \
   V(JSApiObject)                       \
   V(JSArrayBuffer)                     \
@@ -66,7 +62,6 @@ enum InstanceType : uint16_t;
   V(PrototypeInfo)                     \
   V(SharedFunctionInfo)                \
   V(ShortcutCandidate)                 \
-  V(SlicedString)                      \
   V(SmallOrderedHashMap)               \
   V(SmallOrderedHashSet)               \
   V(SmallOrderedNameDictionary)        \
@@ -74,22 +69,20 @@ enum InstanceType : uint16_t;
   V(Struct)                            \
   V(Symbol)                            \
   V(SyntheticModule)                   \
-  V(ThinString)                        \
   V(TransitionArray)                   \
   V(UncompiledDataWithoutPreparseData) \
   V(UncompiledDataWithPreparseData)    \
   V(WasmCapiFunctionData)              \
   V(WasmIndirectFunctionTable)         \
   V(WasmInstanceObject)                \
-  V(WeakArray)                         \
+  V(WasmArray)                         \
+  V(WasmStruct)                        \
+  V(WasmTypeInfo)                      \
   V(WeakCell)
 
-#define TORQUE_OBJECT_BODY_TO_VISITOR_ID_LIST_ADAPTER(V, TYPE, TypeName) \
-  V(TypeName)
-
-#define TORQUE_VISITOR_ID_LIST(V)        \
-  TORQUE_BODY_DESCRIPTOR_LIST_GENERATOR( \
-      TORQUE_OBJECT_BODY_TO_VISITOR_ID_LIST_ADAPTER, V)
+#define TORQUE_VISITOR_ID_LIST(V)     \
+  TORQUE_DATA_ONLY_VISITOR_ID_LIST(V) \
+  TORQUE_POINTER_VISITOR_ID_LIST(V)
 
 // Objects with the same visitor id are processed in the same way by
 // the heap visitors. The visitor ids for data only objects must precede
@@ -97,9 +90,11 @@ enum InstanceType : uint16_t;
 // of whether an object contains only data or may contain pointers.
 enum VisitorId {
 #define VISITOR_ID_ENUM_DECL(id) kVisit##id,
-  DATA_ONLY_VISITOR_ID_LIST(VISITOR_ID_ENUM_DECL) kDataOnlyVisitorIdCount,
+  DATA_ONLY_VISITOR_ID_LIST(VISITOR_ID_ENUM_DECL)
+      TORQUE_DATA_ONLY_VISITOR_ID_LIST(VISITOR_ID_ENUM_DECL)
+          kDataOnlyVisitorIdCount,
   POINTER_VISITOR_ID_LIST(VISITOR_ID_ENUM_DECL)
-      TORQUE_VISITOR_ID_LIST(VISITOR_ID_ENUM_DECL)
+      TORQUE_POINTER_VISITOR_ID_LIST(VISITOR_ID_ENUM_DECL)
 #undef VISITOR_ID_ENUM_DECL
           kVisitorIdCount
 };
@@ -258,7 +253,7 @@ class Map : public HeapObject {
   // Bit field.
   //
   DECL_PRIMITIVE_ACCESSORS(bit_field, byte)
-  // Atomic accessors, used for whitelisting legitimate concurrent accesses.
+  // Atomic accessors, used for allowlisting legitimate concurrent accesses.
   DECL_PRIMITIVE_ACCESSORS(relaxed_bit_field, byte)
 
   // Bit positions for |bit_field|.
@@ -426,9 +421,11 @@ class Map : public HeapObject {
   // there is no guarantee it is attached.
   inline bool IsDetached(Isolate* isolate) const;
 
-  // Returns true if the current map doesn't have DICTIONARY_ELEMENTS but if a
-  // map with DICTIONARY_ELEMENTS was found in the prototype chain.
-  bool DictionaryElementsInPrototypeChainOnly(Isolate* isolate);
+  // Returns true if there is an object with potentially read-only elements
+  // in the prototype chain. It could be a Proxy, a string wrapper,
+  // an object with DICTIONARY_ELEMENTS potentially containing read-only
+  // elements or an object with any frozen elements, or a slow arguments object.
+  bool MayHaveReadOnlyElementsInPrototypeChain(Isolate* isolate);
 
   inline Map ElementsTransitionMap(Isolate* isolate);
 
@@ -578,9 +575,11 @@ class Map : public HeapObject {
   // back pointer chain until they find the map holding their constructor.
   // Returns null_value if there's neither a constructor function nor a
   // FunctionTemplateInfo available.
-  // The field also overlaps with the native context pointer for context maps.
+  // The field also overlaps with the native context pointer for context maps,
+  // and with the Wasm type info for WebAssembly object maps.
   DECL_ACCESSORS(constructor_or_backpointer, Object)
   DECL_ACCESSORS(native_context, NativeContext)
+  DECL_ACCESSORS(wasm_type_info, WasmTypeInfo)
   DECL_GETTER(GetConstructor, Object)
   DECL_GETTER(GetFunctionTemplateInfo, FunctionTemplateInfo)
   inline void SetConstructor(Object constructor,
@@ -596,6 +595,7 @@ class Map : public HeapObject {
                              WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
   // [instance descriptors]: describes the object.
+  DECL_GETTER(synchronized_instance_descriptors, DescriptorArray)
   DECL_GETTER(instance_descriptors, DescriptorArray)
   V8_EXPORT_PRIVATE void SetInstanceDescriptors(Isolate* isolate,
                                                 DescriptorArray descriptors,
@@ -978,7 +978,8 @@ class Map : public HeapObject {
       MaybeHandle<Object> new_value);
 
   // Use the high-level instance_descriptors/SetInstanceDescriptors instead.
-  DECL_ACCESSORS(synchronized_instance_descriptors, DescriptorArray)
+  inline void set_synchronized_instance_descriptors(
+      DescriptorArray value, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
   static const int kFastPropertiesSoftLimit = 12;
   static const int kMaxFastProperties = 128;

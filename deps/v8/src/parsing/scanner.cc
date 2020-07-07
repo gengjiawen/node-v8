@@ -13,6 +13,7 @@
 #include "src/ast/ast-value-factory.h"
 #include "src/numbers/conversions-inl.h"
 #include "src/objects/bigint.h"
+#include "src/parsing/parse-info.h"
 #include "src/parsing/scanner-inl.h"
 #include "src/zone/zone.h"
 
@@ -89,12 +90,10 @@ bool Scanner::BookmarkScope::HasBeenApplied() const {
 // ----------------------------------------------------------------------------
 // Scanner
 
-Scanner::Scanner(Utf16CharacterStream* source, bool is_module)
-    : source_(source),
+Scanner::Scanner(Utf16CharacterStream* source, UnoptimizedCompileFlags flags)
+    : flags_(flags),
+      source_(source),
       found_html_comment_(false),
-      allow_harmony_optional_chaining_(false),
-      allow_harmony_nullish_(false),
-      is_module_(is_module),
       octal_pos_(Location::invalid()),
       octal_message_(MessageTemplate::kNone) {
   DCHECK_NOT_NULL(source);
@@ -106,6 +105,12 @@ void Scanner::Initialize() {
   Init();
   next().after_line_terminator = true;
   Scan();
+}
+
+// static
+bool Scanner::IsInvalid(uc32 c) {
+  DCHECK(c == Invalid() || base::IsInRange(c, 0u, String::kMaxCodePoint));
+  return c == Scanner::Invalid();
 }
 
 template <bool capture_raw, bool unicode>
@@ -121,7 +126,7 @@ uc32 Scanner::ScanHexNumber(int expected_length) {
                          unicode
                              ? MessageTemplate::kInvalidUnicodeEscapeSequence
                              : MessageTemplate::kInvalidHexEscapeSequence);
-      return -1;
+      return Invalid();
     }
     x = x * 16 + d;
     Advance<capture_raw>();
@@ -131,17 +136,17 @@ uc32 Scanner::ScanHexNumber(int expected_length) {
 }
 
 template <bool capture_raw>
-uc32 Scanner::ScanUnlimitedLengthHexNumber(int max_value, int beg_pos) {
+uc32 Scanner::ScanUnlimitedLengthHexNumber(uc32 max_value, int beg_pos) {
   uc32 x = 0;
   int d = HexValue(c0_);
-  if (d < 0) return -1;
+  if (d < 0) return Invalid();
 
   while (d >= 0) {
     x = x * 16 + d;
     if (x > max_value) {
       ReportScannerError(Location(beg_pos, source_pos() + 1),
                          MessageTemplate::kUndefinedUnicodeCodePoint);
-      return -1;
+      return Invalid();
     }
     Advance<capture_raw>();
     d = HexValue(c0_);
@@ -190,7 +195,7 @@ Token::Value Scanner::PeekAhead() {
 }
 
 Token::Value Scanner::SkipSingleHTMLComment() {
-  if (is_module_) {
+  if (flags_.is_module()) {
     ReportScannerError(source_pos(), MessageTemplate::kHtmlCommentInModule);
     return Token::ILLEGAL;
   }
@@ -233,9 +238,9 @@ void Scanner::TryToParseSourceURLComment() {
   if (!name.is_one_byte()) return;
   Vector<const uint8_t> name_literal = name.one_byte_literal();
   LiteralBuffer* value;
-  if (name_literal == StaticCharVector("sourceURL")) {
+  if (name_literal == StaticOneByteVector("sourceURL")) {
     value = &source_url_;
-  } else if (name_literal == StaticCharVector("sourceMappingURL")) {
+  } else if (name_literal == StaticOneByteVector("sourceMappingURL")) {
     value = &source_mapping_url_;
   } else {
     return;
@@ -387,7 +392,7 @@ bool Scanner::ScanEscape() {
     case 't' : c = '\t'; break;
     case 'u' : {
       c = ScanUnicodeEscape<capture_raw>();
-      if (c < 0) return false;
+      if (IsInvalid(c)) return false;
       break;
     }
     case 'v':
@@ -395,7 +400,7 @@ bool Scanner::ScanEscape() {
       break;
     case 'x': {
       c = ScanHexNumber<capture_raw>(2);
-      if (c < 0) return false;
+      if (IsInvalid(c)) return false;
       break;
     }
     case '0':  // Fall through.
@@ -417,6 +422,7 @@ bool Scanner::ScanEscape() {
 
 template <bool capture_raw>
 uc32 Scanner::ScanOctalEscape(uc32 c, int length) {
+  DCHECK('0' <= c && c <= '7');
   uc32 x = c - '0';
   int i = 0;
   for (; i < length; i++) {
@@ -554,7 +560,7 @@ Token::Value Scanner::ScanTemplateSpan() {
         scanner_error_state.MoveErrorTo(next_);
         octal_error_state.MoveErrorTo(next_);
       }
-    } else if (c < 0) {
+    } else if (c == kEndOfInput) {
       // Unterminated template literal
       break;
     } else {
@@ -862,7 +868,7 @@ Token::Value Scanner::ScanNumber(bool seen_period) {
 
 uc32 Scanner::ScanIdentifierUnicodeEscape() {
   Advance();
-  if (c0_ != 'u') return -1;
+  if (c0_ != 'u') return Invalid();
   Advance();
   return ScanUnicodeEscape<false>();
 }
@@ -874,11 +880,12 @@ uc32 Scanner::ScanUnicodeEscape() {
   if (c0_ == '{') {
     int begin = source_pos() - 2;
     Advance<capture_raw>();
-    uc32 cp = ScanUnlimitedLengthHexNumber<capture_raw>(0x10FFFF, begin);
-    if (cp < 0 || c0_ != '}') {
+    uc32 cp =
+        ScanUnlimitedLengthHexNumber<capture_raw>(String::kMaxCodePoint, begin);
+    if (cp == kInvalidSequence || c0_ != '}') {
       ReportScannerError(source_pos(),
                          MessageTemplate::kInvalidUnicodeEscapeSequence);
-      return -1;
+      return Invalid();
     }
     Advance<capture_raw>();
     return cp;
@@ -896,7 +903,7 @@ Token::Value Scanner::ScanIdentifierOrKeywordInnerSlow(bool escaped,
       // Only allow legal identifier part characters.
       // TODO(verwaest): Make this true.
       // DCHECK(!IsIdentifierPart('\'));
-      DCHECK(!IsIdentifierPart(-1));
+      DCHECK(!IsIdentifierPart(Invalid()));
       if (c == '\\' || !IsIdentifierPart(c)) {
         return Token::ILLEGAL;
       }
@@ -987,8 +994,9 @@ Maybe<int> Scanner::ScanRegExpFlags() {
   // Scan regular expression flags.
   JSRegExp::Flags flags;
   while (IsIdentifierPart(c0_)) {
-    JSRegExp::Flags flag = JSRegExp::FlagFromChar(c0_);
-    if (flag == JSRegExp::kInvalid) return Nothing<int>();
+    base::Optional<JSRegExp::Flags> maybe_flag = JSRegExp::FlagFromChar(c0_);
+    if (!maybe_flag.has_value()) return Nothing<int>();
+    JSRegExp::Flags flag = *maybe_flag;
     if (flags & flag) return Nothing<int>();
     Advance();
     flags |= flag;
