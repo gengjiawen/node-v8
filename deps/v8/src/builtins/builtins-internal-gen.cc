@@ -238,8 +238,8 @@ class RecordWriteCodeStubAssembler : public CodeStubAssembler {
   void GetMarkBit(TNode<IntPtrT> object, TNode<IntPtrT>* cell,
                   TNode<IntPtrT>* mask) {
     TNode<IntPtrT> page = PageFromAddress(object);
-    TNode<IntPtrT> bitmap = Load<IntPtrT>(
-        page, IntPtrConstant(BasicMemoryChunk::kMarkBitmapOffset));
+    TNode<IntPtrT> bitmap =
+        IntPtrAdd(page, IntPtrConstant(MemoryChunk::kMarkingBitmapOffset));
 
     {
       // Temp variable to calculate cell offset in bitmap.
@@ -484,15 +484,12 @@ TF_BUILTIN(RecordWrite, RecordWriteCodeStubAssembler) {
     BIND(&call_incremental_wb);
     {
       TNode<ExternalReference> function = ExternalConstant(
-          ExternalReference::incremental_marking_record_write_function());
-      TNode<ExternalReference> isolate_constant =
-          ExternalConstant(ExternalReference::isolate_address(isolate()));
+          ExternalReference::write_barrier_marking_from_code_function());
       TNode<Smi> fp_mode = UncheckedCast<Smi>(Parameter(Descriptor::kFPMode));
       TNode<IntPtrT> object =
           BitcastTaggedToWord(Parameter(Descriptor::kObject));
-      CallCFunction3WithCallerSavedRegistersMode<Int32T, IntPtrT, IntPtrT,
-                                                 ExternalReference>(
-          function, object, slot, isolate_constant, fp_mode, &exit);
+      CallCFunction2WithCallerSavedRegistersMode<Int32T, IntPtrT, IntPtrT>(
+          function, object, slot, fp_mode, &exit);
     }
   }
 

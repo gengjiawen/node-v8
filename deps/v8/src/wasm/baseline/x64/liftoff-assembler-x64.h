@@ -2547,6 +2547,15 @@ void LiftoffAssembler::emit_f64x2_le(LiftoffRegister dst, LiftoffRegister lhs,
                                                             rhs);
 }
 
+void LiftoffAssembler::emit_s128_const(LiftoffRegister dst,
+                                       const uint8_t imms[16]) {
+  uint64_t vals[2];
+  memcpy(vals, imms, sizeof(vals));
+  TurboAssembler::Move(dst.fp(), vals[0]);
+  movq(kScratchRegister, vals[1]);
+  Pinsrq(dst.fp(), kScratchRegister, int8_t{1});
+}
+
 void LiftoffAssembler::emit_s128_not(LiftoffRegister dst, LiftoffRegister src) {
   if (dst.fp() != src.fp()) {
     Pcmpeqd(dst.fp(), dst.fp());

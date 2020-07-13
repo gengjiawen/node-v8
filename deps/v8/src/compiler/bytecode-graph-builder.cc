@@ -80,6 +80,16 @@ class BytecodeGraphBuilder {
     return feedback_vector_node_;
   }
 
+  // Same as above for the feedback vector node.
+  void CreateNativeContextNode();
+  Node* BuildLoadNativeContext();
+  Node* native_context_node() const {
+    DCHECK_NOT_NULL(native_context_node_);
+    return native_context_node_;
+  }
+
+  Node* BuildLoadFeedbackCell(int index);
+
   // Builder for loading the a native context field.
   Node* BuildLoadNativeContextField(int index);
 
@@ -183,7 +193,6 @@ class BytecodeGraphBuilder {
   void BuildUnaryOp(const Operator* op);
   void BuildBinaryOp(const Operator* op);
   void BuildBinaryOpWithImmediate(const Operator* op);
-  void BuildInstanceOf(const Operator* op);
   void BuildCompareOp(const Operator* op);
   void BuildDelete(LanguageMode language_mode);
   void BuildCastOperator(const Operator* op);
@@ -410,6 +419,7 @@ class BytecodeGraphBuilder {
 
   const bool native_context_independent_;
   Node* feedback_vector_node_;
+  Node* native_context_node_;
 
   // Optimization to only create checkpoints when the current position in the
   // control-flow is not effect-dominated by another checkpoint already. All
@@ -504,6 +514,8 @@ class BytecodeGraphBuilder::Environment : public ZoneObject {
                           const BytecodeLivenessState* liveness);
 
  private:
+  friend Zone;
+
   explicit Environment(const Environment* copy);
 
   bool StateValuesRequireUpdate(Node** state_values, Node** values, int count);
@@ -697,7 +709,7 @@ void BytecodeGraphBuilder::Environment::RecordAfterState(
 }
 
 BytecodeGraphBuilder::Environment* BytecodeGraphBuilder::Environment::Copy() {
-  return new (zone()) Environment(this);
+  return zone()->New<Environment>(this);
 }
 
 void BytecodeGraphBuilder::Environment::Merge(
@@ -976,6 +988,7 @@ BytecodeGraphBuilder::BytecodeGraphBuilder(
       native_context_independent_(
           flags & BytecodeGraphBuilderFlag::kNativeContextIndependent),
       feedback_vector_node_(nullptr),
+      native_context_node_(nullptr),
       needs_eager_checkpoint_(true),
       exit_controls_(local_zone),
       state_values_cache_(jsgraph),
@@ -1036,10 +1049,60 @@ Node* BytecodeGraphBuilder::BuildLoadFeedbackVector() {
   return vector;
 }
 
+Node* BytecodeGraphBuilder::BuildLoadFeedbackCell(int index) {
+  if (native_context_independent()) {
+    Environment* env = environment();
+    Node* control = env->GetControlDependency();
+    Node* effect = env->GetEffectDependency();
+
+    // TODO(jgruber,v8:8888): Assumes that the feedback vector has been
+    // allocated.
+    Node* closure_feedback_cell_array = effect = graph()->NewNode(
+        simplified()->LoadField(
+            AccessBuilder::ForFeedbackVectorClosureFeedbackCellArray()),
+        feedback_vector_node(), effect, control);
+
+    Node* feedback_cell = effect = graph()->NewNode(
+        simplified()->LoadField(AccessBuilder::ForFixedArraySlot(index)),
+        closure_feedback_cell_array, effect, control);
+
+    env->UpdateEffectDependency(effect);
+    return feedback_cell;
+  } else {
+    return jsgraph()->Constant(feedback_vector().GetClosureFeedbackCell(index));
+  }
+}
+
+void BytecodeGraphBuilder::CreateNativeContextNode() {
+  DCHECK_NULL(native_context_node_);
+  native_context_node_ = native_context_independent()
+                             ? BuildLoadNativeContext()
+                             : jsgraph()->Constant(native_context());
+}
+
+Node* BytecodeGraphBuilder::BuildLoadNativeContext() {
+  DCHECK(native_context_independent());
+  DCHECK_NULL(native_context_node_);
+
+  Environment* env = environment();
+  Node* control = env->GetControlDependency();
+  Node* effect = env->GetEffectDependency();
+  Node* context = env->Context();
+
+  Node* context_map = effect =
+      graph()->NewNode(simplified()->LoadField(AccessBuilder::ForMap()),
+                       context, effect, control);
+  Node* native_context = effect = graph()->NewNode(
+      simplified()->LoadField(AccessBuilder::ForMapNativeContext()),
+      context_map, effect, control);
+
+  env->UpdateEffectDependency(effect);
+  return native_context;
+}
+
 Node* BytecodeGraphBuilder::BuildLoadNativeContextField(int index) {
   Node* result = NewNode(javascript()->LoadContext(0, index, true));
-  NodeProperties::ReplaceContextInput(result,
-                                      jsgraph()->Constant(native_context()));
+  NodeProperties::ReplaceContextInput(result, native_context_node());
   return result;
 }
 
@@ -1068,6 +1131,7 @@ void BytecodeGraphBuilder::CreateGraph() {
   set_environment(&env);
 
   CreateFeedbackVectorNode();
+  CreateNativeContextNode();
   VisitBytecodes();
 
   // Finish the basic structure of the graph.
@@ -2071,12 +2135,10 @@ void BytecodeGraphBuilder::VisitCreateClosure() {
 
   const Operator* op = javascript()->CreateClosure(
       shared_info.object(),
-      feedback_vector()
-          .GetClosureFeedbackCell(bytecode_iterator().GetIndexOperand(1))
-          .object(),
       jsgraph()->isolate()->builtins()->builtin_handle(Builtins::kCompileLazy),
       allocation);
-  Node* closure = NewNode(op);
+  Node* closure = NewNode(
+      op, BuildLoadFeedbackCell(bytecode_iterator().GetIndexOperand(1)));
   environment()->BindAccumulator(closure);
 }
 
@@ -3067,29 +3129,6 @@ void BytecodeGraphBuilder::VisitGetSuperConstructor() {
                               Environment::kAttachFrameState);
 }
 
-void BytecodeGraphBuilder::BuildInstanceOf(const Operator* op) {
-  // TODO(jgruber, v8:8888): Treat InstanceOf like other compare ops.
-  DCHECK_EQ(op->opcode(), IrOpcode::kJSInstanceOf);
-  PrepareEagerCheckpoint();
-  Node* left =
-      environment()->LookupRegister(bytecode_iterator().GetRegisterOperand(0));
-  Node* right = environment()->LookupAccumulator();
-
-  FeedbackSlot slot = bytecode_iterator().GetSlotOperand(1);
-  JSTypeHintLowering::LoweringResult lowering =
-      TryBuildSimplifiedBinaryOp(op, left, right, slot);
-  if (lowering.IsExit()) return;
-
-  Node* node = nullptr;
-  if (lowering.IsSideEffectFree()) {
-    node = lowering.value();
-  } else {
-    DCHECK(!lowering.Changed());
-    node = NewNode(op, left, right);
-  }
-  environment()->BindAccumulator(node, Environment::kAttachFrameState);
-}
-
 void BytecodeGraphBuilder::BuildCompareOp(const Operator* op) {
   DCHECK(JSOperator::IsBinaryWithFeedback(op->opcode()));
   PrepareEagerCheckpoint();
@@ -3172,8 +3211,9 @@ void BytecodeGraphBuilder::VisitTestIn() {
 }
 
 void BytecodeGraphBuilder::VisitTestInstanceOf() {
-  int const slot_index = bytecode_iterator().GetIndexOperand(1);
-  BuildInstanceOf(javascript()->InstanceOf(CreateFeedbackSource(slot_index)));
+  FeedbackSource feedback = CreateFeedbackSource(
+      bytecode_iterator().GetSlotOperand(kCompareOperationHintIndex));
+  BuildCompareOp(javascript()->InstanceOf(feedback));
 }
 
 void BytecodeGraphBuilder::VisitTestUndetectable() {
@@ -3585,8 +3625,7 @@ void BytecodeGraphBuilder::VisitSuspendGenerator() {
   // Store the parameters.
   for (int i = 0; i < parameter_count_without_receiver; i++) {
     value_inputs[3 + count_written++] =
-        environment()->LookupRegister(interpreter::Register::FromParameterIndex(
-            i, parameter_count_without_receiver));
+        environment()->LookupRegister(bytecode_iterator().GetParameter(i));
   }
 
   // Store the registers.
@@ -4159,7 +4198,7 @@ Node* BytecodeGraphBuilder::MakeNode(const Operator* op, int value_input_count,
     if (has_context) {
       *current_input++ = OperatorProperties::NeedsExactContext(op)
                              ? environment()->Context()
-                             : jsgraph()->Constant(native_context());
+                             : native_context_node();
     }
     if (has_frame_state) {
       // The frame state will be inserted later. Here we misuse the {Dead} node

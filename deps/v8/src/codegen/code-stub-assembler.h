@@ -260,10 +260,6 @@ enum class PrimitiveType { kBoolean, kNumber, kString, kSymbol };
 #define CSA_DEBUG_INFO(name) \
   { #name, __FILE__, __LINE__ }
 #define BIND(label) Bind(label, CSA_DEBUG_INFO(label))
-#define VARIABLE(name, ...) \
-  Variable name(this, CSA_DEBUG_INFO(name), __VA_ARGS__)
-#define VARIABLE_CONSTRUCTOR(name, ...) \
-  name(this, CSA_DEBUG_INFO(name), __VA_ARGS__)
 #define TYPED_VARIABLE_DEF(type, name, ...) \
   TVariable<type> name(CSA_DEBUG_INFO(name), __VA_ARGS__)
 #define TYPED_VARIABLE_CONSTRUCTOR(name, ...) \
@@ -273,8 +269,6 @@ enum class PrimitiveType { kBoolean, kNumber, kString, kSymbol };
 #define CSA_ASSERT_BRANCH(csa, ...) ((void)0)
 #define CSA_ASSERT_JS_ARGC_EQ(csa, expected) ((void)0)
 #define BIND(label) Bind(label)
-#define VARIABLE(name, ...) Variable name(this, __VA_ARGS__)
-#define VARIABLE_CONSTRUCTOR(name, ...) name(this, __VA_ARGS__)
 #define TYPED_VARIABLE_DEF(type, name, ...) TVariable<type> name(__VA_ARGS__)
 #define TYPED_VARIABLE_CONSTRUCTOR(name, ...) name(__VA_ARGS__)
 #endif  // DEBUG
@@ -813,9 +807,6 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   TNode<HeapObject> AllocateInNewSpace(int size, AllocationFlags flags = kNone);
   TNode<HeapObject> Allocate(TNode<IntPtrT> size,
                              AllocationFlags flags = kNone);
-  TNode<HeapObject> AllocateAllowLOS(TNode<IntPtrT> size) {
-    return Allocate(size, AllocationFlag::kAllowLargeObjectAllocation);
-  }
 
   TNode<HeapObject> Allocate(int size, AllocationFlags flags = kNone);
   TNode<HeapObject> InnerAllocate(TNode<HeapObject> previous, int offset);
@@ -1356,9 +1347,9 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
       ParameterMode parameter_mode = INTPTR_PARAMETERS,
       LoadSensitivity needs_poisoning = LoadSensitivity::kSafe);
 
+  template <typename TIndex>
   TNode<Object> LoadFixedArrayElement(
-      TNode<FixedArray> object, Node* index, int additional_offset = 0,
-      ParameterMode parameter_mode = INTPTR_PARAMETERS,
+      TNode<FixedArray> object, TNode<TIndex> index, int additional_offset = 0,
       LoadSensitivity needs_poisoning = LoadSensitivity::kSafe,
       CheckBounds check_bounds = CheckBounds::kAlways);
 
@@ -1368,31 +1359,14 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
       TNode<FixedArray> object, TNode<IntPtrT> index, int additional_offset = 0,
       LoadSensitivity needs_poisoning = LoadSensitivity::kSafe) {
     return LoadFixedArrayElement(object, index, additional_offset,
-                                 INTPTR_PARAMETERS, needs_poisoning,
-                                 CheckBounds::kDebugOnly);
-  }
-
-  TNode<Object> LoadFixedArrayElement(
-      TNode<FixedArray> object, TNode<IntPtrT> index,
-      LoadSensitivity needs_poisoning,
-      CheckBounds check_bounds = CheckBounds::kAlways) {
-    return LoadFixedArrayElement(object, index, 0, INTPTR_PARAMETERS,
-                                 needs_poisoning, check_bounds);
-  }
-
-  TNode<Object> LoadFixedArrayElement(
-      TNode<FixedArray> object, TNode<IntPtrT> index, int additional_offset = 0,
-      LoadSensitivity needs_poisoning = LoadSensitivity::kSafe) {
-    return LoadFixedArrayElement(object, index, additional_offset,
-                                 INTPTR_PARAMETERS, needs_poisoning);
+                                 needs_poisoning, CheckBounds::kDebugOnly);
   }
 
   TNode<Object> LoadFixedArrayElement(
       TNode<FixedArray> object, int index, int additional_offset = 0,
       LoadSensitivity needs_poisoning = LoadSensitivity::kSafe) {
     return LoadFixedArrayElement(object, IntPtrConstant(index),
-                                 additional_offset, INTPTR_PARAMETERS,
-                                 needs_poisoning);
+                                 additional_offset, needs_poisoning);
   }
   // This doesn't emit a bounds-check. As part of the security-performance
   // tradeoff, only use it if it is performance critical.
@@ -1400,12 +1374,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
       TNode<FixedArray> object, int index, int additional_offset = 0,
       LoadSensitivity needs_poisoning = LoadSensitivity::kSafe) {
     return LoadFixedArrayElement(object, IntPtrConstant(index),
-                                 additional_offset, INTPTR_PARAMETERS,
-                                 needs_poisoning, CheckBounds::kDebugOnly);
-  }
-  TNode<Object> LoadFixedArrayElement(TNode<FixedArray> object,
-                                      TNode<Smi> index) {
-    return LoadFixedArrayElement(object, index, 0, SMI_PARAMETERS);
+                                 additional_offset, needs_poisoning,
+                                 CheckBounds::kDebugOnly);
   }
 
   TNode<Object> LoadPropertyArrayElement(TNode<PropertyArray> object,
@@ -3314,6 +3284,11 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
                                          ElementsKind elements_kind,
                                          TNode<Context> context);
 
+  template <typename T>
+  TNode<T> PrepareValueForWriteToTypedArray(TNode<Object> input,
+                                            ElementsKind elements_kind,
+                                            TNode<Context> context);
+
   // Store value to an elements array with given elements kind.
   // TODO(turbofan): For BIGINT64_ELEMENTS and BIGUINT64_ELEMENTS
   // we pass {value} as BigInt object instead of int64_t. We should
@@ -3338,10 +3313,9 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
                         TNode<Context> context,
                         TVariable<Object>* maybe_converted_value = nullptr);
 
-  Node* CheckForCapacityGrow(TNode<JSObject> object,
-                             TNode<FixedArrayBase> elements, ElementsKind kind,
-                             TNode<UintPtrT> length, TNode<IntPtrT> key,
-                             Label* bailout);
+  TNode<FixedArrayBase> CheckForCapacityGrow(
+      TNode<JSObject> object, TNode<FixedArrayBase> elements, ElementsKind kind,
+      TNode<UintPtrT> length, TNode<IntPtrT> key, Label* bailout);
 
   TNode<FixedArrayBase> CopyElementsOnWrite(TNode<HeapObject> object,
                                             TNode<FixedArrayBase> elements,
@@ -3656,6 +3630,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
     CHECK(!base::bits::SignedMulOverflow32(a, b, &val));
     return val;
   }
+
+  int32_t ConstexprWord32Or(int32_t a, int32_t b) { return a | b; }
 
   bool ConstexprUintPtrLessThan(uintptr_t a, uintptr_t b) { return a < b; }
 

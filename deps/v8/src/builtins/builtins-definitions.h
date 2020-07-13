@@ -671,6 +671,7 @@ namespace internal {
   /* instanceof */                                                             \
   TFC(OrdinaryHasInstance, Compare)                                            \
   TFC(InstanceOf, Compare)                                                     \
+  TFC(InstanceOf_WithFeedback, Compare_WithFeedback)                           \
                                                                                \
   /* for-in */                                                                 \
   TFS(ForInEnumerate, kReceiver)                                               \
@@ -917,11 +918,8 @@ namespace internal {
   CPP(Trace)                                                                   \
                                                                                \
   /* Weak refs */                                                              \
-  CPP(FinalizationRegistryConstructor)                                         \
   CPP(FinalizationRegistryRegister)                                            \
   CPP(FinalizationRegistryUnregister)                                          \
-  CPP(WeakRefConstructor)                                                      \
-  CPP(WeakRefDeref)                                                            \
                                                                                \
   /* Async modules */                                                          \
   TFJ(AsyncModuleEvaluate, kDontAdaptArgumentsSentinel)                        \

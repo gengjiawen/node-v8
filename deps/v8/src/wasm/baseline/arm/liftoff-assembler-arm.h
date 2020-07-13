@@ -120,11 +120,16 @@ template <void (Assembler::*op)(Register, Register, Register, SBit, Condition),
                                            SBit, Condition)>
 inline void I64Binop(LiftoffAssembler* assm, LiftoffRegister dst,
                      LiftoffRegister lhs, LiftoffRegister rhs) {
-  DCHECK_NE(dst.low_gp(), lhs.high_gp());
-  DCHECK_NE(dst.low_gp(), rhs.high_gp());
-  (assm->*op)(dst.low_gp(), lhs.low_gp(), rhs.low_gp(), SetCC, al);
+  Register dst_low = dst.low_gp();
+  if (dst_low == lhs.high_gp() || dst_low == rhs.high_gp()) {
+    dst_low = assm->GetUnusedRegister(
+                      kGpReg, LiftoffRegList::ForRegs(lhs, rhs, dst.high_gp()))
+                  .gp();
+  }
+  (assm->*op)(dst_low, lhs.low_gp(), rhs.low_gp(), SetCC, al);
   (assm->*op_with_carry)(dst.high_gp(), lhs.high_gp(), Operand(rhs.high_gp()),
                          LeaveCC, al);
+  if (dst_low != dst.low_gp()) assm->mov(dst.low_gp(), dst_low);
 }
 
 template <void (Assembler::*op)(Register, Register, const Operand&, SBit,
@@ -944,9 +949,8 @@ void LiftoffAssembler::AtomicLoad(LiftoffRegister dst, Register src_addr,
   ldrexd(dst_low, dst_high, actual_addr);
   dmb(ISH);
 
-  LiftoffAssembler::ParallelRegisterMoveTuple reg_moves[]{
-      {dst, LiftoffRegister::ForPair(dst_low, dst_high), kWasmI64}};
-  ParallelRegisterMove(ArrayVector(reg_moves));
+  ParallelRegisterMove(
+      {{dst, LiftoffRegister::ForPair(dst_low, dst_high), kWasmI64}});
 }
 
 void LiftoffAssembler::AtomicStore(Register dst_addr, Register offset_reg,
@@ -1066,15 +1070,13 @@ inline void AtomicI64CompareExchange(LiftoffAssembler* lasm,
   __ SpillRegisters(dst_addr, offset, result_low, result_high, new_value_low,
                     new_value_high, store_result, expected_low, expected_high);
 
-  LiftoffAssembler::ParallelRegisterMoveTuple reg_moves[]{
-      {LiftoffRegister::ForPair(new_value_low, new_value_high), new_value,
-       kWasmI64},
-      {LiftoffRegister::ForPair(expected_low, expected_high), expected,
-       kWasmI64},
-      {LiftoffRegister(dst_addr), LiftoffRegister(dst_addr_reg), kWasmI32},
-      {LiftoffRegister(offset),
-       LiftoffRegister(offset_reg != no_reg ? offset_reg : offset), kWasmI32}};
-  __ ParallelRegisterMove(ArrayVector(reg_moves));
+  __ ParallelRegisterMove(
+      {{LiftoffRegister::ForPair(new_value_low, new_value_high), new_value,
+        kWasmI64},
+       {LiftoffRegister::ForPair(expected_low, expected_high), expected,
+        kWasmI64},
+       {dst_addr, dst_addr_reg, kWasmI32},
+       {offset, offset_reg != no_reg ? offset_reg : offset, kWasmI32}});
 
   {
     UseScratchRegisterScope temps(lasm);
@@ -1101,9 +1103,8 @@ inline void AtomicI64CompareExchange(LiftoffAssembler* lasm,
   __ dmb(ISH);
   __ bind(&done);
 
-  LiftoffAssembler::ParallelRegisterMoveTuple reg_moves_result[]{
-      {result, LiftoffRegister::ForPair(result_low, result_high), kWasmI64}};
-  __ ParallelRegisterMove(ArrayVector(reg_moves_result));
+  __ ParallelRegisterMove(
+      {{result, LiftoffRegister::ForPair(result_low, result_high), kWasmI64}});
 }
 #undef __
 }  // namespace liftoff
@@ -3262,6 +3263,14 @@ void LiftoffAssembler::emit_f64x2_lt(LiftoffRegister dst, LiftoffRegister lhs,
 void LiftoffAssembler::emit_f64x2_le(LiftoffRegister dst, LiftoffRegister lhs,
                                      LiftoffRegister rhs) {
   liftoff::F64x2Compare(this, dst, lhs, rhs, le);
+}
+
+void LiftoffAssembler::emit_s128_const(LiftoffRegister dst,
+                                       const uint8_t imms[16]) {
+  uint64_t vals[2];
+  memcpy(vals, imms, sizeof(vals));
+  vmov(dst.low_fp(), Double(vals[0]));
+  vmov(dst.high_fp(), Double(vals[1]));
 }
 
 void LiftoffAssembler::emit_s128_not(LiftoffRegister dst, LiftoffRegister src) {

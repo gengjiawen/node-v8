@@ -5,6 +5,8 @@
 #ifndef V8_WASM_WASM_OPCODES_H_
 #define V8_WASM_WASM_OPCODES_H_
 
+#include <memory>
+
 #include "src/common/globals.h"
 #include "src/common/message-template.h"
 #include "src/wasm/value-type.h"
@@ -747,47 +749,120 @@ class V8_EXPORT_PRIVATE WasmOpcodes {
 };
 
 // Representation of an initializer expression.
-struct WasmInitExpr {
-  enum WasmInitKind {
+class WasmInitExpr {
+ public:
+  enum Operator {
     kNone,
-    kGlobalIndex,
+    kGlobalGet,
     kI32Const,
     kI64Const,
     kF32Const,
     kF64Const,
     kRefNullConst,
     kRefFuncConst,
-  } kind;
+    kRttCanon,
+    kRttSub
+  };
 
-  union {
+  union Immediate {
     int32_t i32_const;
     int64_t i64_const;
     float f32_const;
     double f64_const;
-    uint32_t global_index;
-    uint32_t function_index;
-  } val;
+    uint32_t index;
+    HeapType::Representation heap_type;
+  };
 
-  WasmInitExpr() : kind(kNone) {}
-  explicit WasmInitExpr(int32_t v) : kind(kI32Const) { val.i32_const = v; }
-  explicit WasmInitExpr(int64_t v) : kind(kI64Const) { val.i64_const = v; }
-  explicit WasmInitExpr(float v) : kind(kF32Const) { val.f32_const = v; }
-  explicit WasmInitExpr(double v) : kind(kF64Const) { val.f64_const = v; }
-
-  explicit WasmInitExpr(WasmInitKind kind) : kind(kind) {
-    DCHECK_EQ(kind, kRefNullConst);
+  WasmInitExpr() : kind_(kNone) { immediate_.i32_const = 0; }
+  explicit WasmInitExpr(int32_t v) : kind_(kI32Const) {
+    immediate_.i32_const = v;
+  }
+  explicit WasmInitExpr(int64_t v) : kind_(kI64Const) {
+    immediate_.i64_const = v;
+  }
+  explicit WasmInitExpr(float v) : kind_(kF32Const) {
+    immediate_.f32_const = v;
+  }
+  explicit WasmInitExpr(double v) : kind_(kF64Const) {
+    immediate_.f64_const = v;
   }
 
-  WasmInitExpr(WasmInitKind kind, uint32_t index) : kind(kind) {
-    if (kind == kGlobalIndex) {
-      val.global_index = index;
-    } else if (kind == kRefFuncConst) {
-      val.function_index = index;
-    } else {
-      // For the other types, the other initializers should be used.
-      UNREACHABLE();
+  MOVE_ONLY_NO_DEFAULT_CONSTRUCTOR(WasmInitExpr);
+
+  static WasmInitExpr GlobalGet(uint32_t index) {
+    WasmInitExpr expr;
+    expr.kind_ = kGlobalGet;
+    expr.immediate_.index = index;
+    return expr;
+  }
+
+  static WasmInitExpr RefFuncConst(uint32_t index) {
+    WasmInitExpr expr;
+    expr.kind_ = kRefFuncConst;
+    expr.immediate_.index = index;
+    return expr;
+  }
+
+  static WasmInitExpr RefNullConst(HeapType::Representation heap_type) {
+    WasmInitExpr expr;
+    expr.kind_ = kRefNullConst;
+    expr.immediate_.heap_type = heap_type;
+    return expr;
+  }
+
+  static WasmInitExpr RttCanon(HeapType::Representation heap_type) {
+    WasmInitExpr expr;
+    expr.kind_ = kRttCanon;
+    expr.immediate_.heap_type = heap_type;
+    return expr;
+  }
+
+  static WasmInitExpr RttSub(HeapType::Representation heap_type,
+                             WasmInitExpr supertype) {
+    WasmInitExpr expr;
+    expr.kind_ = kRttSub;
+    expr.immediate_.heap_type = heap_type;
+    expr.operand_ = std::make_unique<WasmInitExpr>(std::move(supertype));
+    return expr;
+  }
+
+  Immediate immediate() const { return immediate_; }
+  Operator kind() const { return kind_; }
+  WasmInitExpr* operand() const { return operand_.get(); }
+
+  bool operator==(const WasmInitExpr& other) const {
+    if (kind() != other.kind()) return false;
+    switch (kind()) {
+      case kNone:
+        return true;
+      case kGlobalGet:
+      case kRefFuncConst:
+        return immediate().index == other.immediate().index;
+      case kI32Const:
+        return immediate().i32_const == other.immediate().i32_const;
+      case kI64Const:
+        return immediate().i64_const == other.immediate().i64_const;
+      case kF32Const:
+        return immediate().f32_const == other.immediate().f32_const;
+      case kF64Const:
+        return immediate().f64_const == other.immediate().f64_const;
+      case kRefNullConst:
+      case kRttCanon:
+        return immediate().heap_type == other.immediate().heap_type;
+      case kRttSub:
+        return immediate().heap_type == other.immediate().heap_type &&
+               *operand() == *other.operand();
     }
   }
+
+  V8_INLINE bool operator!=(const WasmInitExpr& other) {
+    return !(*this == other);
+  }
+
+ private:
+  Immediate immediate_;
+  Operator kind_;
+  std::unique_ptr<WasmInitExpr> operand_ = nullptr;
 };
 
 }  // namespace wasm

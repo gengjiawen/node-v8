@@ -12,10 +12,12 @@ found in the LICENSE file. -->
   <!-- <link rel="icon" type="image/png" href="/images/favicon.png"/> -->
   <!-- <script type="module" src="index.js"></script> -->
   <script src="helper.js"></script>
+
   <script type="module" src="log-file-reader.mjs"></script>
   <script type="module" src="map-panel.mjs"></script>
   <script type="module" src="timeline-panel.mjs"></script>
   <script type="module" src="ic-panel.mjs"></script>
+
   <script src="../splaytree.js"></script>
   <script src="../codemap.js"></script>
   <script src="../csvparser.js"></script>
@@ -34,57 +36,18 @@ found in the LICENSE file. -->
     color: white;
     margin-left: 5%;
     margin-right: 5%;
-    background-color: #041531;
+    background-color: #000000;
   }
   .colorbox {
-  width: 10px;
-  height: 10px;
-  border: 1px black solid;
+    width: 10px;
+    height: 10px;
+    border: 1px black solid;
   }
   #instructions {
     padding: 10px 10px  60px 10px ;
     margin: auto;
   }
-  #stats {
-    display: flex;
-    height: 250px;
 
-    background-color: #232323;
-    padding: 10px 10px  10px 10px ;
-    margin: auto;
-  }
-  .stats-panel {
-        background-color: #355EC2;
-        padding: 20px 20px  20px 20px ;
-        margin: auto;
-  }
-  #stats table {
-    flex: 1;
-    padding-right: 50px;
-    max-height: 250px;
-    display: inline-block;
-    overflow-y: scroll;
-  }
-  #stats table td {
-    cursor: pointer;
-  }
-  #stats .transitionTable {
-    overflow-y: scroll;
-  }
-  #stats .transitionTable tr {
-    max-width: 200px;
-
-  }
-  #stats .transitionType {
-    text-align: right;
-    max-width: 380px;
-  }
-  #stats .transitionType tr td:nth-child(2) {
-    text-align: left;
-  }
-  #stats table thead td {
-    border-bottom: 1px black dotted;
-  }
   /*
   .indicium-logo  {
     width: 380px;
@@ -177,9 +140,10 @@ let stateGlobal = Object.create(null);
 function globalDataUpload(e) {
   stateGlobal.timeline = e.detail;
   if(!e.detail) return;
+  $('#container').style.display = 'block';
   // instantiate the app logic
   stateGlobal.fileData = e.detail;
-  stateGlobal.state = new State('#map-panel', '#stats', '#timeline-panel');
+  stateGlobal.state = new State('#map-panel','#timeline-panel');
   stateGlobal.timeline = handleLoadTextMapProcessor(stateGlobal.fileData.chunk);
   updateDocumentState();
   // process the IC explorer
@@ -190,6 +154,12 @@ function globalSearchBarEvent(e) {
   if(!e.detail.isValidMap) return;
   document.state.map = e.detail.map;
 }
+
+function showMaps(e) {
+  // show maps on the view
+  document.state.view.transitionView.showMaps(e.detail);
+}
+
 </script>
 </head>
 <body>
@@ -200,12 +170,11 @@ function globalSearchBarEvent(e) {
       <log-file-reader id="log-file-reader" onchange="globalDataUpload(event)"></log-file-reader>
       <br></br>
     </section>
-    <div class="stats-panel">
-      <section id="stats"><h2>Stats</h2></section>
+    <div id="container" style="display: none;">
+      <timeline-panel id="timeline-panel"></timeline-panel>
+      <map-panel id="map-panel" onclick="globalSearchBarEvent(event)" onchange="showMaps(event)"></map-panel>
+      <ic-panel id="ic-panel"></ic-panel>
     </div>
-    <timeline-panel id="timeline-panel"></timeline-panel>
-    <map-panel id="map-panel" onclick="globalSearchBarEvent(event)"></map-panel>
-    <ic-panel id="ic-panel"></ic-panel>
   </div>
 
   <div id="instructions">

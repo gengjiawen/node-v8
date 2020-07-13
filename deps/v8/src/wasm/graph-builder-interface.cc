@@ -118,8 +118,8 @@ class WasmGraphBuildingInterface {
     TFNode* start = builder_->Start(
         static_cast<int>(decoder->sig_->parameter_count() + 1 + 1));
     uint32_t num_locals = decoder->num_locals();
-    SsaEnv* ssa_env = new (decoder->zone())
-        SsaEnv(decoder->zone(), SsaEnv::kReached, start, start, num_locals);
+    SsaEnv* ssa_env = decoder->zone()->New<SsaEnv>(
+        decoder->zone(), SsaEnv::kReached, start, start, num_locals);
 
     // Initialize effect and control before initializing the locals default
     // values (which might require instance loads) or loading the context.
@@ -189,7 +189,7 @@ class WasmGraphBuildingInterface {
     catch_env->state = SsaEnv::kUnreachable;
     SsaEnv* try_env = Steal(decoder->zone(), outer_env);
     SetEnv(try_env);
-    TryInfo* try_info = new (decoder->zone()) TryInfo(catch_env);
+    TryInfo* try_info = decoder->zone()->New<TryInfo>(catch_env);
     block->end_env = outer_env;
     block->try_info = try_info;
     block->previous_catch = current_catch_;
@@ -750,12 +750,21 @@ class WasmGraphBuildingInterface {
 
   void RefTest(FullDecoder* decoder, const Value& object, const Value& rtt,
                Value* result) {
-    result->node = BUILD(RefTest, object.node, rtt.node);
+    using CheckForNull = compiler::WasmGraphBuilder::CheckForNull;
+    CheckForNull null_check = object.type.is_nullable()
+                                  ? CheckForNull::kWithNullCheck
+                                  : CheckForNull::kWithoutNullCheck;
+    result->node = BUILD(RefTest, object.node, rtt.node, null_check);
   }
 
   void RefCast(FullDecoder* decoder, const Value& object, const Value& rtt,
                Value* result) {
-    result->node = BUILD(RefCast, object.node, rtt.node, decoder->position());
+    using CheckForNull = compiler::WasmGraphBuilder::CheckForNull;
+    CheckForNull null_check = object.type.is_nullable()
+                                  ? CheckForNull::kWithNullCheck
+                                  : CheckForNull::kWithoutNullCheck;
+    result->node =
+        BUILD(RefCast, object.node, rtt.node, null_check, decoder->position());
   }
 
   void PassThrough(FullDecoder* decoder, const Value& from, Value* to) {
@@ -1026,7 +1035,7 @@ class WasmGraphBuildingInterface {
       ssa_env_->control = control();
       ssa_env_->effect = effect();
     }
-    SsaEnv* result = new (zone) SsaEnv(*from);
+    SsaEnv* result = zone->New<SsaEnv>(*from);
     result->state = SsaEnv::kReached;
     return result;
   }
@@ -1039,14 +1048,14 @@ class WasmGraphBuildingInterface {
       ssa_env_->control = control();
       ssa_env_->effect = effect();
     }
-    SsaEnv* result = new (zone) SsaEnv(std::move(*from));
+    SsaEnv* result = zone->New<SsaEnv>(std::move(*from));
     result->state = SsaEnv::kReached;
     return result;
   }
 
   // Create an unreachable environment.
   SsaEnv* UnreachableEnv(Zone* zone) {
-    return new (zone) SsaEnv(zone, SsaEnv::kUnreachable, nullptr, nullptr, 0);
+    return zone->New<SsaEnv>(zone, SsaEnv::kUnreachable, nullptr, nullptr, 0);
   }
 
   void DoCall(FullDecoder* decoder, uint32_t table_index, TFNode* index_node,

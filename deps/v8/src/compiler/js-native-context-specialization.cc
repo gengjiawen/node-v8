@@ -170,7 +170,7 @@ Reduction JSNativeContextSpecialization::ReduceJSToString(Node* node) {
   NumberMatcher number_matcher(input);
   if (number_matcher.HasValue()) {
     const StringConstantBase* base =
-        new (shared_zone()) NumberToStringConstant(number_matcher.Value());
+        shared_zone()->New<NumberToStringConstant>(number_matcher.Value());
     reduction =
         Replace(graph()->NewNode(common()->DelayedStringConstant(base)));
     ReplaceWithValue(node, reduction.replacement());
@@ -187,13 +187,13 @@ JSNativeContextSpecialization::CreateDelayedStringConstant(Node* node) {
   } else {
     NumberMatcher number_matcher(node);
     if (number_matcher.HasValue()) {
-      return new (shared_zone()) NumberToStringConstant(number_matcher.Value());
+      return shared_zone()->New<NumberToStringConstant>(number_matcher.Value());
     } else {
       HeapObjectMatcher matcher(node);
       if (matcher.HasValue() && matcher.Ref(broker()).IsString()) {
         StringRef s = matcher.Ref(broker()).AsString();
-        return new (shared_zone())
-            StringLiteral(s.object(), static_cast<size_t>(s.length()));
+        return shared_zone()->New<StringLiteral>(
+            s.object(), static_cast<size_t>(s.length()));
       } else {
         UNREACHABLE();
       }
@@ -335,7 +335,7 @@ Reduction JSNativeContextSpecialization::ReduceJSAdd(Node* node) {
     const StringConstantBase* left = CreateDelayedStringConstant(lhs);
     const StringConstantBase* right = CreateDelayedStringConstant(rhs);
     const StringConstantBase* cons =
-        new (shared_zone()) StringCons(left, right);
+        shared_zone()->New<StringCons>(left, right);
 
     Node* reduced = graph()->NewNode(common()->DelayedStringConstant(cons));
     ReplaceWithValue(node, reduced);
@@ -376,14 +376,14 @@ Reduction JSNativeContextSpecialization::ReduceJSGetSuperConstructor(
 }
 
 Reduction JSNativeContextSpecialization::ReduceJSInstanceOf(Node* node) {
-  DCHECK_EQ(IrOpcode::kJSInstanceOf, node->opcode());
-  FeedbackParameter const& p = FeedbackParameterOf(node->op());
-  Node* object = NodeProperties::GetValueInput(node, 0);
-  Node* constructor = NodeProperties::GetValueInput(node, 1);
-  Node* context = NodeProperties::GetContextInput(node);
-  Node* effect = NodeProperties::GetEffectInput(node);
-  Node* frame_state = NodeProperties::GetFrameStateInput(node);
-  Node* control = NodeProperties::GetControlInput(node);
+  JSInstanceOfNode n(node);
+  FeedbackParameter const& p = n.Parameters();
+  Node* object = n.left();
+  Node* constructor = n.right();
+  TNode<Object> context = n.context();
+  FrameState frame_state = n.frame_state();
+  Effect effect = n.effect();
+  Control control = n.control();
 
   // Check if the right hand side is a known {receiver}, or
   // we have feedback from the InstanceOfIC.
@@ -441,6 +441,8 @@ Reduction JSNativeContextSpecialization::ReduceJSInstanceOf(Node* node) {
     NodeProperties::ReplaceValueInput(node, constructor, 0);
     NodeProperties::ReplaceValueInput(node, object, 1);
     NodeProperties::ReplaceEffectInput(node, effect);
+    STATIC_ASSERT(n.FeedbackVectorIndex() == 2);
+    node->RemoveInput(n.FeedbackVectorIndex());
     NodeProperties::ChangeOp(node, javascript()->OrdinaryHasInstance());
     return Changed(node).FollowedBy(ReduceJSOrdinaryHasInstance(node));
   }
@@ -626,9 +628,14 @@ Reduction JSNativeContextSpecialization::ReduceJSOrdinaryHasInstance(
 
     JSReceiverRef bound_target_function = function.bound_target_function();
 
-    NodeProperties::ReplaceValueInput(node, object, 0);
+    Node* feedback = jsgraph()->UndefinedConstant();
+    NodeProperties::ReplaceValueInput(node, object,
+                                      JSInstanceOfNode::LeftIndex());
     NodeProperties::ReplaceValueInput(
-        node, jsgraph()->Constant(bound_target_function), 1);
+        node, jsgraph()->Constant(bound_target_function),
+        JSInstanceOfNode::RightIndex());
+    node->InsertInput(zone(), JSInstanceOfNode::FeedbackVectorIndex(),
+                      feedback);
     NodeProperties::ChangeOp(node, javascript()->InstanceOf(FeedbackSource()));
     return Changed(node).FollowedBy(ReduceJSInstanceOf(node));
   }

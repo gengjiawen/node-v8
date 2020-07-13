@@ -1773,11 +1773,9 @@ class V8_EXPORT ScriptCompiler {
    public:
     enum Encoding { ONE_BYTE, TWO_BYTE, UTF8 };
 
-#if defined(_MSC_VER) && _MSC_VER >= 1910 /* Disable on VS2015 */
     V8_DEPRECATE_SOON(
         "This class takes ownership of source_stream, so use the constructor "
         "taking a unique_ptr to make these semantics clearer")
-#endif
     StreamedSource(ExternalSourceStream* source_stream, Encoding encoding);
     StreamedSource(std::unique_ptr<ExternalSourceStream> source_stream,
                    Encoding encoding);
@@ -7313,6 +7311,7 @@ class PromiseRejectMessage {
 typedef void (*PromiseRejectCallback)(PromiseRejectMessage message);
 
 // --- Microtasks Callbacks ---
+V8_DEPRECATE_SOON("Use *WithData version.")
 typedef void (*MicrotasksCompletedCallback)(Isolate*);
 typedef void (*MicrotasksCompletedCallbackWithData)(Isolate*, void*);
 typedef void (*MicrotaskCallback)(void* data);
@@ -8087,10 +8086,11 @@ enum class MeasureMemoryMode { kSummary, kDetailed };
 /**
  * Controls how promptly a memory measurement request is executed.
  * By default the measurement is folded with the next scheduled GC which may
- * happen after a while. The kEager starts increment GC right away and
- * is useful for testing.
+ * happen after a while and is forced after some timeout.
+ * The kEager mode starts incremental GC right away and is useful for testing.
+ * The kLazy mode does not force GC.
  */
-enum class MeasureMemoryExecution { kDefault, kEager };
+enum class MeasureMemoryExecution { kDefault, kEager, kLazy };
 
 /**
  * The delegate is used in Isolate::MeasureMemory API.
@@ -10089,8 +10089,6 @@ class V8_EXPORT TryCatch {
   /**
    * Returns the exception caught by this try/catch block.  If no exception has
    * been caught an empty handle is returned.
-   *
-   * The returned handle is valid until this TryCatch block has been destroyed.
    */
   Local<Value> Exception() const;
 
@@ -10112,9 +10110,6 @@ class V8_EXPORT TryCatch {
   /**
    * Returns the message associated with this exception.  If there is
    * no message associated an empty handle is returned.
-   *
-   * The returned handle is valid until this TryCatch block has been
-   * destroyed.
    */
   Local<v8::Message> Message() const;
 

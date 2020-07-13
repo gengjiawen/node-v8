@@ -668,6 +668,8 @@ class V8_EXPORT_PRIVATE LiveRange : public NON_EXPORTED_BASE(ZoneObject) {
 
  private:
   friend class TopLevelLiveRange;
+  friend Zone;
+
   explicit LiveRange(int relative_id, MachineRepresentation rep,
                      TopLevelLiveRange* top_level);
 
@@ -733,6 +735,7 @@ class LiveRangeBundle : public ZoneObject {
 
  private:
   friend class BundleBuilder;
+  friend Zone;
 
   // Representation of the non-empty interval [start,end[.
   class Range {
@@ -916,7 +919,7 @@ class V8_EXPORT_PRIVATE TopLevelLiveRange final : public LiveRange {
     spilled_in_deferred_blocks_ = true;
     spill_move_insertion_locations_ = nullptr;
     list_of_blocks_requiring_spill_operands_ =
-        new (zone) BitVector(total_block_count, zone);
+        zone->New<BitVector>(total_block_count, zone);
   }
 
   // Updates internal data structures to reflect that this range is not
@@ -925,7 +928,7 @@ class V8_EXPORT_PRIVATE TopLevelLiveRange final : public LiveRange {
     spill_start_index_ = -1;
     spill_move_insertion_locations_ = nullptr;
     list_of_blocks_requiring_spill_operands_ =
-        new (zone) BitVector(total_block_count, zone);
+        zone->New<BitVector>(total_block_count, zone);
   }
 
   // Promotes this range to spill at definition if it was marked for spilling
@@ -952,7 +955,13 @@ class V8_EXPORT_PRIVATE TopLevelLiveRange final : public LiveRange {
 
   void Verify() const;
   void VerifyChildrenInOrder() const;
+
+  // Returns the LiveRange covering the given position, or nullptr if no such
+  // range exists. Uses a linear search through child ranges. The range at the
+  // previously requested position is cached, so this function will be very fast
+  // if you call it with a non-decreasing sequence of positions.
   LiveRange* GetChildCovers(LifetimePosition pos);
+
   int GetNextChildId() {
     return IsSplinter() ? splintered_from()->GetNextChildId()
                         : ++last_child_id_;

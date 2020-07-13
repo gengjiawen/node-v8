@@ -828,13 +828,13 @@ class PromiseBuiltinReducerAssembler : public JSCallReducerAssembler {
   TNode<JSFunction> CreateClosureFromBuiltinSharedFunctionInfo(
       SharedFunctionInfoRef shared, TNode<Context> context) {
     DCHECK(shared.HasBuiltinId());
+    Handle<FeedbackCell> feedback_cell =
+        isolate()->factory()->many_closures_cell();
     Callable const callable = Builtins::CallableFor(
         isolate(), static_cast<Builtins::Name>(shared.builtin_id()));
     return AddNode<JSFunction>(graph()->NewNode(
-        javascript()->CreateClosure(shared.object(),
-                                    isolate()->factory()->many_closures_cell(),
-                                    callable.code()),
-        context, effect(), control()));
+        javascript()->CreateClosure(shared.object(), callable.code()),
+        HeapConstant(feedback_cell), context, effect(), control()));
   }
 
   void CallPromiseExecutor(TNode<Object> executor, TNode<JSFunction> resolve,
@@ -3760,6 +3760,10 @@ Reduction JSCallReducer::ReduceCallOrConstructWithArrayLikeOrSpread(
     start_index = formal_parameter_count;
   }
 
+  // TODO(jgruber,v8:8888): Attempt to remove this restriction. The reason it
+  // currently exists is because we cannot create code dependencies in NCI code.
+  if (broker()->is_native_context_independent()) return NoChange();
+
   // For call/construct with spread, we need to also install a code
   // dependency on the array iterator lookup protector cell to ensure
   // that no one messed with the %ArrayIteratorPrototype%.next method.
@@ -3987,7 +3991,7 @@ Reduction JSCallReducer::ReduceJSCall(Node* node) {
   // the {target} must have the same native context as the call site.
   // Same if the {target} is the result of a CheckClosure operation.
   if (target->opcode() == IrOpcode::kJSCreateClosure) {
-    CreateClosureParameters const& p = CreateClosureParametersOf(target->op());
+    CreateClosureParameters const& p = JSCreateClosureNode{target}.Parameters();
     return ReduceJSCall(node, SharedFunctionInfoRef(broker(), p.shared_info()));
   } else if (target->opcode() == IrOpcode::kCheckClosure) {
     FeedbackCellRef cell(broker(), FeedbackCellOf(target->op()));
@@ -6341,12 +6345,13 @@ Reduction JSCallReducer::ReducePromisePrototypeCatch(Node* node) {
 Node* JSCallReducer::CreateClosureFromBuiltinSharedFunctionInfo(
     SharedFunctionInfoRef shared, Node* context, Node* effect, Node* control) {
   DCHECK(shared.HasBuiltinId());
+  Handle<FeedbackCell> feedback_cell =
+      isolate()->factory()->many_closures_cell();
   Callable const callable = Builtins::CallableFor(
       isolate(), static_cast<Builtins::Name>(shared.builtin_id()));
   return graph()->NewNode(
-      javascript()->CreateClosure(
-          shared.object(), factory()->many_closures_cell(), callable.code()),
-      context, effect, control);
+      javascript()->CreateClosure(shared.object(), callable.code()),
+      jsgraph()->HeapConstant(feedback_cell), context, effect, control);
 }
 
 // ES section #sec-promise.prototype.finally

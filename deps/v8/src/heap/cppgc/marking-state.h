@@ -31,6 +31,8 @@ class MarkingState {
 
   inline bool MarkNoPush(HeapObjectHeader&);
 
+  template <
+      HeapObjectHeader::AccessMode = HeapObjectHeader::AccessMode::kNonAtomic>
   inline void DynamicallyMarkAddress(ConstAddress);
 
   inline void RegisterWeakReferenceIfNeeded(const void*, TraceDescriptor,
@@ -71,13 +73,6 @@ MarkingState::MarkingState(
 
 void MarkingState::MarkAndPush(const void* object, TraceDescriptor desc) {
   DCHECK_NOT_NULL(object);
-  if (desc.base_object_payload ==
-      cppgc::GarbageCollectedMixin::kNotFullyConstructedObject) {
-    // This means that the objects are not-yet-fully-constructed. See comments
-    // on GarbageCollectedMixin for how those objects are handled.
-    not_fully_constructed_worklist_.Push(object);
-    return;
-  }
   MarkAndPush(HeapObjectHeader::FromPayload(
                   const_cast<void*>(desc.base_object_payload)),
               desc);
@@ -102,15 +97,17 @@ bool MarkingState::MarkNoPush(HeapObjectHeader& header) {
   return header.TryMarkAtomic();
 }
 
+template <HeapObjectHeader::AccessMode mode>
 void MarkingState::DynamicallyMarkAddress(ConstAddress address) {
   HeapObjectHeader& header =
-      BasePage::FromPayload(address)->ObjectHeaderFromInnerAddress(
+      BasePage::FromPayload(address)->ObjectHeaderFromInnerAddress<mode>(
           const_cast<Address>(address));
-  DCHECK(!header.IsInConstruction<HeapObjectHeader::AccessMode::kNonAtomic>());
+  DCHECK(!header.IsInConstruction<mode>());
   if (MarkNoPush(header)) {
     marking_worklist_.Push(
         {reinterpret_cast<void*>(header.Payload()),
-         GlobalGCInfoTable::GCInfoFromIndex(header.GetGCInfoIndex()).trace});
+         GlobalGCInfoTable::GCInfoFromIndex(header.GetGCInfoIndex<mode>())
+             .trace});
   }
 }
 
@@ -128,9 +125,7 @@ void MarkingState::RegisterWeakReferenceIfNeeded(const void* object,
   // Filter out already marked values. The write barrier for WeakMember
   // ensures that any newly set value after this point is kept alive and does
   // not require the callback.
-  if (desc.base_object_payload !=
-          cppgc::GarbageCollectedMixin::kNotFullyConstructedObject &&
-      HeapObjectHeader::FromPayload(desc.base_object_payload)
+  if (HeapObjectHeader::FromPayload(desc.base_object_payload)
           .IsMarked<HeapObjectHeader::AccessMode::kAtomic>())
     return;
   RegisterWeakCallback(weak_callback, parameter);
@@ -140,14 +135,13 @@ void MarkingState::InvokeWeakRootsCallbackIfNeeded(const void* object,
                                                    TraceDescriptor desc,
                                                    WeakCallback weak_callback,
                                                    const void* parameter) {
-  if (desc.base_object_payload ==
-      cppgc::GarbageCollectedMixin::kNotFullyConstructedObject) {
-    // This method is only called at the end of marking. If the object is in
-    // construction, then it should be reachable from the stack.
-    return;
-  }
   // Since weak roots are only traced at the end of marking, we can execute
   // the callback instead of registering it.
+#if DEBUG
+  const HeapObjectHeader& header =
+      HeapObjectHeader::FromPayload(desc.base_object_payload);
+  DCHECK_IMPLIES(header.IsInConstruction(), header.IsMarked());
+#endif  // DEBUG
   weak_callback(LivenessBrokerFactory::Create(), parameter);
 }
 

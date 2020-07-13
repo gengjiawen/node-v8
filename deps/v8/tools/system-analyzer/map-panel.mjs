@@ -1,6 +1,7 @@
 // Copyright 2020 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+import "./stats-panel.mjs";
 
 defineCustomElement('map-panel', (templateText) =>
  class MapPanel extends HTMLElement {
@@ -40,6 +41,24 @@ defineCustomElement('map-panel', (templateText) =>
   get tooltipContentsSelect() {
     return this.$('#tooltipContents');
   }
+  get tooltipContentsSelect() {
+    return this.$('#tooltipContents');
+  }
+
+  get statsPanelSelect() {
+    return this.$('#stats-panel');
+  }
+
+  // send a timeline to the stats-panel
+  get timeline() {
+    return this.statsPanelSelect.timeline;
+  }
+  set timeline(value) {
+    console.assert(value !== undefined, "timeline undefined!");
+    this.statsPanelSelect.timeline = value;
+    this.statsPanelSelect.update();
+  }
+
 
   handleTransitionViewChange(e){
     this.tooltipSelect.style.left = e.pageX + "px";
@@ -59,12 +78,13 @@ defineCustomElement('map-panel', (templateText) =>
     if(selectedMap){
       dataModel.isValidMap = true;
       dataModel.map = selectedMap;
-      searchBar.className = "green";
+      searchBar.className = "success";
     } else {
       dataModel.isValidMap = false;
-      searchBar.className = "red";
+      searchBar.className = "failure";
     }
     this.dispatchEvent(new CustomEvent(
       'click', {bubbles: true, composed: true, detail: dataModel}));
   }
+
 });

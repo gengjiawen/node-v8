@@ -24,6 +24,7 @@
 #include "src/heap/large-spaces.h"
 #include "src/heap/local-allocator-inl.h"
 #include "src/heap/mark-compact-inl.h"
+#include "src/heap/marking-barrier.h"
 #include "src/heap/marking-visitor-inl.h"
 #include "src/heap/marking-visitor.h"
 #include "src/heap/memory-measurement-inl.h"
@@ -2065,7 +2066,7 @@ void MarkCompactCollector::MarkLiveObjects() {
   }
 
   if (was_marked_incrementally_) {
-    heap()->incremental_marking()->Deactivate();
+    heap()->marking_barrier()->Deactivate();
   }
 
   epoch_++;
@@ -2540,6 +2541,11 @@ void MarkCompactCollector::ClearJSWeakRefs() {
             matched_cell.set_unregister_token(undefined);
           },
           gc_notify_updated_slot);
+      // The following is necessary because in the case that weak_cell has
+      // already been popped and removed from the FinalizationRegistry, the call
+      // to JSFinalizationRegistry::RemoveUnregisterToken above will not find
+      // weak_cell itself to clear its unregister token.
+      weak_cell.set_unregister_token(undefined);
     } else {
       // The unregister_token is alive.
       ObjectSlot slot = weak_cell.RawField(WeakCell::kUnregisterTokenOffset);

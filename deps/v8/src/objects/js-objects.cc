@@ -705,14 +705,18 @@ void JSReceiver::DeleteNormalizedProperty(Handle<JSReceiver> object,
   DCHECK(entry.is_found());
 
   if (object->IsJSGlobalObject()) {
-    // If we have a global object, invalidate the cell and swap in a new one.
+    // If we have a global object, invalidate the cell and remove it from the
+    // global object's dictionary.
     Handle<GlobalDictionary> dictionary(
         JSGlobalObject::cast(*object).global_dictionary(), isolate);
 
-    auto cell = PropertyCell::InvalidateEntry(isolate, dictionary, entry);
-    cell->set_value(ReadOnlyRoots(isolate).the_hole_value());
-    cell->set_property_details(
-        PropertyDetails::Empty(PropertyCellType::kUninitialized));
+    Handle<PropertyCell> cell(dictionary->CellAt(entry), isolate);
+
+    Handle<GlobalDictionary> new_dictionary =
+        GlobalDictionary::DeleteEntry(isolate, dictionary, entry);
+    JSGlobalObject::cast(*object).set_global_dictionary(*new_dictionary);
+
+    cell->ClearAndInvalidate(ReadOnlyRoots(isolate));
   } else {
     Handle<NameDictionary> dictionary(object->property_dictionary(), isolate);
 
@@ -2323,17 +2327,16 @@ void JSObject::SetNormalizedProperty(Handle<JSObject> object, Handle<Name> name,
     Handle<JSGlobalObject> global_obj = Handle<JSGlobalObject>::cast(object);
     Handle<GlobalDictionary> dictionary(global_obj->global_dictionary(),
                                         isolate);
-    InternalIndex entry =
-        dictionary->FindEntry(ReadOnlyRoots(isolate), name, hash);
+    ReadOnlyRoots roots(isolate);
+    InternalIndex entry = dictionary->FindEntry(isolate, roots, name, hash);
 
     if (entry.is_not_found()) {
       DCHECK_IMPLIES(global_obj->map().is_prototype_map(),
                      Map::IsPrototypeChainInvalidated(global_obj->map()));
       auto cell = isolate->factory()->NewPropertyCell(name);
       cell->set_value(*value);
-      auto cell_type = value->IsUndefined(isolate)
-                           ? PropertyCellType::kUndefined
-                           : PropertyCellType::kConstant;
+      auto cell_type = value->IsUndefined(roots) ? PropertyCellType::kUndefined
+                                                 : PropertyCellType::kConstant;
       details = details.set_cell_type(cell_type);
       value = cell;
       dictionary =
@@ -3326,7 +3329,7 @@ void JSObject::MigrateSlowToFast(Handle<JSObject> object,
   ReadOnlyRoots roots(isolate);
   for (int i = 0; i < instance_descriptor_length; i++) {
     InternalIndex index(Smi::ToInt(iteration_order->get(i)));
-    DCHECK(dictionary->IsKey(roots, dictionary->KeyAt(index)));
+    DCHECK(dictionary->IsKey(roots, dictionary->KeyAt(isolate, index)));
 
     PropertyKind kind = dictionary->DetailsAt(index).kind();
     if (kind == kData) {
@@ -5676,38 +5679,8 @@ void JSGlobalObject::InvalidatePropertyCell(Handle<JSGlobalObject> global,
   auto dictionary = handle(global->global_dictionary(), global->GetIsolate());
   InternalIndex entry = dictionary->FindEntry(global->GetIsolate(), name);
   if (entry.is_not_found()) return;
-  PropertyCell::InvalidateEntry(global->GetIsolate(), dictionary, entry);
-}
-
-Handle<PropertyCell> JSGlobalObject::EnsureEmptyPropertyCell(
-    Handle<JSGlobalObject> global, Handle<Name> name,
-    PropertyCellType cell_type, InternalIndex* entry_out) {
-  Isolate* isolate = global->GetIsolate();
-  DCHECK(!global->HasFastProperties());
-  Handle<GlobalDictionary> dictionary(global->global_dictionary(), isolate);
-  InternalIndex entry = dictionary->FindEntry(isolate, name);
-  Handle<PropertyCell> cell;
-  if (entry.is_found()) {
-    if (entry_out) *entry_out = entry;
-    cell = handle(dictionary->CellAt(entry), isolate);
-    PropertyCellType original_cell_type = cell->property_details().cell_type();
-    DCHECK(original_cell_type == PropertyCellType::kInvalidated ||
-           original_cell_type == PropertyCellType::kUninitialized);
-    DCHECK(cell->value().IsTheHole(isolate));
-    if (original_cell_type == PropertyCellType::kInvalidated) {
-      cell = PropertyCell::InvalidateEntry(isolate, dictionary, entry);
-    }
-    PropertyDetails details(kData, NONE, cell_type);
-    cell->set_property_details(details);
-    return cell;
-  }
-  cell = isolate->factory()->NewPropertyCell(name);
-  PropertyDetails details(kData, NONE, cell_type);
-  dictionary = GlobalDictionary::Add(isolate, dictionary, name, cell, details,
-                                     entry_out);
-  // {*entry_out} is initialized inside GlobalDictionary::Add().
-  global->SetProperties(*dictionary);
-  return cell;
+  PropertyCell::InvalidateAndReplaceEntry(global->GetIsolate(), dictionary,
+                                          entry);
 }
 
 // static

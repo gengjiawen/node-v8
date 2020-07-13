@@ -467,32 +467,34 @@ class LiftoffCompiler {
 
   // Returns the number of inputs processed (1 or 2).
   uint32_t ProcessParameter(ValueType type, uint32_t input_idx) {
-    const int num_lowered_params = 1 + needs_gp_reg_pair(type);
-    ValueType lowered_type = needs_gp_reg_pair(type) ? kWasmI32 : type;
-    RegClass rc = reg_class_for(lowered_type);
-    // Initialize to anything, will be set in the loop and used afterwards.
-    LiftoffRegister reg = kGpCacheRegList.GetFirstRegSet();
-    LiftoffRegList pinned;
-    for (int pair_idx = 0; pair_idx < num_lowered_params; ++pair_idx) {
-      compiler::LinkageLocation param_loc =
-          descriptor_->GetInputLocation(input_idx + pair_idx);
-      // Initialize to anything, will be set in both arms of the if.
-      LiftoffRegister in_reg = kGpCacheRegList.GetFirstRegSet();
-      if (param_loc.IsRegister()) {
-        DCHECK(!param_loc.IsAnyRegister());
-        in_reg = LiftoffRegister::from_external_code(rc, type,
-                                                     param_loc.AsRegister());
-      } else if (param_loc.IsCallerFrameSlot()) {
-        in_reg = __ GetUnusedRegister(rc, pinned);
-        __ LoadCallerFrameSlot(in_reg, -param_loc.AsCallerFrameSlot(),
-                               lowered_type);
+    const bool needs_pair = needs_gp_reg_pair(type);
+    const ValueType reg_type = needs_pair ? kWasmI32 : type;
+    const RegClass rc = reg_class_for(reg_type);
+
+    auto LoadToReg = [this, reg_type, rc](compiler::LinkageLocation location,
+                                          LiftoffRegList pinned) {
+      if (location.IsRegister()) {
+        DCHECK(!location.IsAnyRegister());
+        return LiftoffRegister::from_external_code(rc, reg_type,
+                                                   location.AsRegister());
       }
-      reg = pair_idx == 0 ? in_reg
-                          : LiftoffRegister::ForPair(reg.gp(), in_reg.gp());
-      pinned.set(reg);
+      DCHECK(location.IsCallerFrameSlot());
+      LiftoffRegister reg = __ GetUnusedRegister(rc, pinned);
+      __ LoadCallerFrameSlot(reg, -location.AsCallerFrameSlot(), reg_type);
+      return reg;
+    };
+
+    LiftoffRegister reg =
+        LoadToReg(descriptor_->GetInputLocation(input_idx), {});
+    if (needs_pair) {
+      LiftoffRegister reg2 =
+          LoadToReg(descriptor_->GetInputLocation(input_idx + 1),
+                    LiftoffRegList::ForRegs(reg));
+      reg = LiftoffRegister::ForPair(reg.gp(), reg2.gp());
     }
     __ PushRegister(type, reg);
-    return num_lowered_params;
+
+    return needs_pair ? 2 : 1;
   }
 
   void StackCheck(WasmCodePosition position) {
@@ -1083,6 +1085,22 @@ class LiftoffCompiler {
       CASE_I64_UNOP(I64SExtendI32, i64_signextend_i32)
       CASE_I64_UNOP(I64Clz, i64_clz)
       CASE_I64_UNOP(I64Ctz, i64_ctz)
+      CASE_TYPE_CONVERSION(I32SConvertSatF32, I32, F32, nullptr, kNoTrap)
+      CASE_TYPE_CONVERSION(I32UConvertSatF32, I32, F32, nullptr, kNoTrap)
+      CASE_TYPE_CONVERSION(I32SConvertSatF64, I32, F64, nullptr, kNoTrap)
+      CASE_TYPE_CONVERSION(I32UConvertSatF64, I32, F64, nullptr, kNoTrap)
+      CASE_TYPE_CONVERSION(I64SConvertSatF32, I64, F32,
+                           &ExternalReference::wasm_float32_to_int64_sat,
+                           kNoTrap)
+      CASE_TYPE_CONVERSION(I64UConvertSatF32, I64, F32,
+                           &ExternalReference::wasm_float32_to_uint64_sat,
+                           kNoTrap)
+      CASE_TYPE_CONVERSION(I64SConvertSatF64, I64, F64,
+                           &ExternalReference::wasm_float64_to_int64_sat,
+                           kNoTrap)
+      CASE_TYPE_CONVERSION(I64UConvertSatF64, I64, F64,
+                           &ExternalReference::wasm_float64_to_uint64_sat,
+                           kNoTrap)
       case kExprI32Eqz:
         DCHECK(decoder->lookahead(0, kExprI32Eqz));
         if (decoder->lookahead(1, kExprBrIf)) {
@@ -1116,24 +1134,6 @@ class LiftoffCompiler {
               __ emit_type_conversion(kExprI64UConvertI32, dst, c_call_dst,
                                       nullptr);
             });
-        CASE_TYPE_CONVERSION(I32SConvertSatF32, I32, F32, nullptr, kNoTrap)
-        CASE_TYPE_CONVERSION(I32UConvertSatF32, I32, F32, nullptr, kNoTrap)
-        CASE_TYPE_CONVERSION(I32SConvertSatF64, I32, F64, nullptr, kNoTrap)
-        CASE_TYPE_CONVERSION(I32UConvertSatF64, I32, F64, nullptr, kNoTrap)
-        CASE_TYPE_CONVERSION(I64SConvertSatF32, I64, F32,
-                             &ExternalReference::wasm_float32_to_int64_sat,
-                             kNoTrap)
-        CASE_TYPE_CONVERSION(I64UConvertSatF32, I64, F32,
-                             &ExternalReference::wasm_float32_to_uint64_sat,
-                             kNoTrap)
-        CASE_TYPE_CONVERSION(I64SConvertSatF64, I64, F64,
-                             &ExternalReference::wasm_float64_to_int64_sat,
-                             kNoTrap)
-        CASE_TYPE_CONVERSION(I64UConvertSatF64, I64, F64,
-                             &ExternalReference::wasm_float64_to_uint64_sat,
-                             kNoTrap)
-        return unsupported(decoder, kNonTrappingFloatToInt,
-                           WasmOpcodes::OpcodeName(opcode));
       default:
         UNREACHABLE();
     }
@@ -1907,7 +1907,7 @@ class LiftoffCompiler {
     // If we are generating debugging code, we really need to spill all
     // registers to make them inspectable when stopping at the trap.
     auto* spilled =
-        new (compilation_zone_) SpilledRegistersBeforeTrap(compilation_zone_);
+        compilation_zone_->New<SpilledRegistersBeforeTrap>(compilation_zone_);
     for (uint32_t i = 0, e = __ cache_state()->stack_height(); i < e; ++i) {
       auto& slot = __ cache_state()->stack_state[i];
       if (!slot.is_reg()) continue;
@@ -2949,7 +2949,21 @@ class LiftoffCompiler {
 
   void S128Const(FullDecoder* decoder, const Simd128Immediate<validate>& imm,
                  Value* result) {
-    unsupported(decoder, kSimd, "simd");
+    constexpr RegClass result_rc = reg_class_for(ValueType::kS128);
+    LiftoffRegister dst = __ GetUnusedRegister(result_rc, {});
+    bool all_zeroes = std::all_of(std::begin(imm.value), std::end(imm.value),
+                                  [](uint8_t v) { return v == 0; });
+    bool all_ones = std::all_of(std::begin(imm.value), std::end(imm.value),
+                                [](uint8_t v) { return v == 0xff; });
+    if (all_zeroes) {
+      __ LiftoffAssembler::emit_s128_xor(dst, dst, dst);
+    } else if (all_ones) {
+      // Any SIMD eq will work, i32x4 is efficient on all archs.
+      __ LiftoffAssembler::emit_i32x4_eq(dst, dst, dst);
+    } else {
+      __ LiftoffAssembler::emit_s128_const(dst, imm.value);
+    }
+    __ PushRegister(kWasmS128, dst);
   }
 
   void Simd8x16ShuffleOp(FullDecoder* decoder,
@@ -3204,11 +3218,9 @@ class LiftoffCompiler {
     WasmAtomicNotifyDescriptor descriptor;
     DCHECK_EQ(0, descriptor.GetStackParameterCount());
     DCHECK_EQ(2, descriptor.GetRegisterParameterCount());
-    LiftoffAssembler::ParallelRegisterMoveTuple reg_moves[]{
-        {LiftoffRegister(descriptor.GetRegisterParameter(0)),
-         LiftoffRegister(index), kWasmI32},
-        {LiftoffRegister(descriptor.GetRegisterParameter(1)), count, kWasmI32}};
-    __ ParallelRegisterMove(ArrayVector(reg_moves));
+    __ ParallelRegisterMove(
+        {{descriptor.GetRegisterParameter(0), index, kWasmI32},
+         {descriptor.GetRegisterParameter(1), count, kWasmI32}});
 
     __ CallRuntimeStub(WasmCode::kWasmAtomicNotify);
     RegisterDebugSideTableEntry(DebugSideTableBuilder::kDidSpill);

@@ -49,7 +49,8 @@ CodeGenerator::CodeGenerator(
     int start_source_position, JumpOptimizationInfo* jump_opt,
     PoisoningMitigationLevel poisoning_level, const AssemblerOptions& options,
     int32_t builtin_index, size_t max_unoptimized_frame_height,
-    size_t max_pushed_argument_count, std::unique_ptr<AssemblerBuffer> buffer)
+    size_t max_pushed_argument_count, std::unique_ptr<AssemblerBuffer> buffer,
+    const char* debug_name)
     : zone_(codegen_zone),
       isolate_(isolate),
       frame_access_state_(nullptr),
@@ -83,7 +84,8 @@ CodeGenerator::CodeGenerator(
       result_(kSuccess),
       poisoning_level_(poisoning_level),
       block_starts_(codegen_zone),
-      instr_starts_(codegen_zone) {
+      instr_starts_(codegen_zone),
+      debug_name_(debug_name) {
   for (int i = 0; i < instructions->InstructionBlockCount(); ++i) {
     new (&labels_[i]) Label;
   }
@@ -112,7 +114,7 @@ void CodeGenerator::AddProtectedInstructionLanding(uint32_t instr_offset,
 
 void CodeGenerator::CreateFrameAccessState(Frame* frame) {
   FinishFrame(frame);
-  frame_access_state_ = new (zone()) FrameAccessState(frame);
+  frame_access_state_ = zone()->New<FrameAccessState>(frame);
 }
 
 bool CodeGenerator::ShouldApplyOffsetToStackCheck(Instruction* instr,
@@ -512,6 +514,11 @@ MaybeHandle<Code> CodeGenerator::FinalizeCode() {
     tasm()->AbortedCodeGeneration();
     return MaybeHandle<Code>();
   }
+
+  // TODO(jgruber,v8:8888): Turn this into a DCHECK once confidence is
+  // high that the implementation is complete.
+  CHECK_IMPLIES(info()->native_context_independent(),
+                code->IsNativeContextIndependent(isolate()));
 
   isolate()->counters()->total_compiled_code_size()->Increment(
       code->raw_instruction_size());
@@ -964,7 +971,7 @@ Handle<DeoptimizationData> CodeGenerator::GenerateDeoptimizationData() {
 }
 
 Label* CodeGenerator::AddJumpTable(Label** targets, size_t target_count) {
-  jump_tables_ = new (zone()) JumpTable(jump_tables_, targets, target_count);
+  jump_tables_ = zone()->New<JumpTable>(jump_tables_, targets, target_count);
   return jump_tables_->label();
 }
 
@@ -1156,7 +1163,7 @@ DeoptimizationExit* CodeGenerator::BuildTranslation(
   BuildTranslationForFrameStateDescriptor(descriptor, &iter, &translation,
                                           state_combine);
 
-  DeoptimizationExit* const exit = new (zone()) DeoptimizationExit(
+  DeoptimizationExit* const exit = zone()->New<DeoptimizationExit>(
       current_source_position_, descriptor->bailout_id(), translation.index(),
       pc_offset, entry.kind(), entry.reason());
 

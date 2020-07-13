@@ -6,6 +6,7 @@
 #define V8_AST_SCOPES_H_
 
 #include <numeric>
+
 #include "src/ast/ast.h"
 #include "src/base/compiler-specific.h"
 #include "src/base/hashmap.h"
@@ -15,6 +16,7 @@
 #include "src/objects/objects.h"
 #include "src/utils/pointer-with-payload.h"
 #include "src/utils/utils.h"
+#include "src/zone/zone-hashmap.h"
 #include "src/zone/zone.h"
 
 namespace v8 {
@@ -697,6 +699,7 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   friend class DeclarationScope;
   friend class ClassScope;
   friend class ScopeTestHelper;
+  friend Zone;
 
   Zone* zone_;
 
@@ -1258,7 +1261,7 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
 
   V8_INLINE RareData* EnsureRareData() {
     if (rare_data_ == nullptr) {
-      rare_data_ = new (zone_) RareData;
+      rare_data_ = zone_->New<RareData>();
     }
     return rare_data_;
   }
@@ -1439,8 +1442,8 @@ class V8_EXPORT_PRIVATE ClassScope : public Scope {
   }
   V8_INLINE RareData* EnsureRareData() {
     if (GetRareData() == nullptr) {
-      rare_data_and_is_parsing_heritage_.SetPointer(new (zone_)
-                                                        RareData(zone_));
+      rare_data_and_is_parsing_heritage_.SetPointer(
+          zone_->New<RareData>(zone_));
     }
     return GetRareData();
   }

@@ -625,6 +625,16 @@ FieldAccess AccessBuilder::ForMapPrototype() {
 }
 
 // static
+FieldAccess AccessBuilder::ForMapNativeContext() {
+  FieldAccess access = {
+      kTaggedBase,         Map::kConstructorOrBackPointerOrNativeContextOffset,
+      Handle<Name>(),      MaybeHandle<Map>(),
+      Type::Any(),         MachineType::TaggedPointer(),
+      kPointerWriteBarrier};
+  return access;
+}
+
+// static
 FieldAccess AccessBuilder::ForModuleRegularExports() {
   FieldAccess access = {
       kTaggedBase,           SourceTextModule::kRegularExportsOffset,
@@ -1174,6 +1184,16 @@ FieldAccess AccessBuilder::ForFeedbackCellValue() {
                         Handle<Name>(),   MaybeHandle<Map>(),
                         Type::Any(),      MachineType::TaggedPointer(),
                         kFullWriteBarrier};
+  return access;
+}
+
+// static
+FieldAccess AccessBuilder::ForFeedbackVectorClosureFeedbackCellArray() {
+  FieldAccess access = {
+      kTaggedBase,      FeedbackVector::kClosureFeedbackCellArrayOffset,
+      Handle<Name>(),   MaybeHandle<Map>(),
+      Type::Any(),      MachineType::TaggedPointer(),
+      kFullWriteBarrier};
   return access;
 }
 

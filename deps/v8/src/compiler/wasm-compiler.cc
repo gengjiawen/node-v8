@@ -5356,8 +5356,26 @@ Node* WasmGraphBuilder::ArrayNew(uint32_t array_index,
 
 Node* WasmGraphBuilder::RttCanon(wasm::HeapType type) {
   if (type.is_generic()) {
-    // TODO(7748): Implement this.
-    UNIMPLEMENTED();
+    switch (type.representation()) {
+      case wasm::HeapType::kEq:
+        return LOAD_FULL_POINTER(
+            BuildLoadIsolateRoot(),
+            IsolateData::root_slot_offset(RootIndex::kWasmRttEqrefMap));
+      case wasm::HeapType::kExtern:
+        return LOAD_FULL_POINTER(
+            BuildLoadIsolateRoot(),
+            IsolateData::root_slot_offset(RootIndex::kWasmRttExternrefMap));
+      case wasm::HeapType::kFunc:
+        return LOAD_FULL_POINTER(
+            BuildLoadIsolateRoot(),
+            IsolateData::root_slot_offset(RootIndex::kWasmRttFuncrefMap));
+      case wasm::HeapType::kI31:
+        return LOAD_FULL_POINTER(
+            BuildLoadIsolateRoot(),
+            IsolateData::root_slot_offset(RootIndex::kWasmRttI31refMap));
+      default:
+        UNREACHABLE();
+    }
   }
   // This logic is duplicated from module-instantiate.cc.
   // TODO(jkummerow): Find a nicer solution.
@@ -5375,11 +5393,6 @@ Node* WasmGraphBuilder::RttCanon(wasm::HeapType type) {
 }
 
 Node* WasmGraphBuilder::RttSub(wasm::HeapType type, Node* parent_rtt) {
-  if (type.is_generic()) {
-    // TODO(7748): Implement this. {type} could be eqref, with {parent_rtt}
-    // being (rtt.canon anyref).
-    UNIMPLEMENTED();
-  }
   return CALL_BUILTIN(
       WasmAllocateRtt,
       graph()->NewNode(
@@ -5388,23 +5401,44 @@ Node* WasmGraphBuilder::RttSub(wasm::HeapType type, Node* parent_rtt) {
       LOAD_INSTANCE_FIELD(NativeContext, MachineType::TaggedPointer()));
 }
 
-Node* WasmGraphBuilder::RefTest(Node* object, Node* rtt) {
-  Node* map =
-      gasm_->Load(MachineType::TaggedPointer(), object, HeapObject::kMapOffset);
+Node* WasmGraphBuilder::RefTest(Node* object, Node* rtt,
+                                CheckForNull null_check) {
+  // TODO(7748): Check if {object} is an i31ref.
+  auto done = gasm_->MakeLabel(MachineRepresentation::kWord32);
+  if (null_check == kWithNullCheck) {
+    gasm_->GotoIf(gasm_->WordEqual(object, RefNull()), &done,
+                  gasm_->Int32Constant(0));
+  }
+
+  Node* map = gasm_->Load(MachineType::TaggedPointer(), object,
+                          HeapObject::kMapOffset - kHeapObjectTag);
   // TODO(7748): Add a fast path for map == rtt.
-  return BuildChangeSmiToInt32(CALL_BUILTIN(
+  Node* subtype_check = BuildChangeSmiToInt32(CALL_BUILTIN(
       WasmIsRttSubtype, map, rtt,
       LOAD_INSTANCE_FIELD(NativeContext, MachineType::TaggedPointer())));
+
+  if (null_check == kWithNullCheck) {
+    gasm_->Goto(&done, subtype_check);
+    gasm_->Bind(&done);
+    subtype_check = done.PhiAt(0);
+  }
+  return subtype_check;
 }
 
 Node* WasmGraphBuilder::RefCast(Node* object, Node* rtt,
+                                CheckForNull null_check,
                                 wasm::WasmCodePosition position) {
-  Node* map =
-      gasm_->Load(MachineType::TaggedPointer(), object, HeapObject::kMapOffset);
+  // TODO(7748): Check if {object} is an i31ref.
+  if (null_check == kWithNullCheck) {
+    TrapIfTrue(wasm::kTrapIllegalCast, gasm_->WordEqual(object, RefNull()),
+               position);
+  }
+  Node* map = gasm_->Load(MachineType::TaggedPointer(), object,
+                          HeapObject::kMapOffset - kHeapObjectTag);
   // TODO(7748): Add a fast path for map == rtt.
-  Node* check_result = CALL_BUILTIN(
+  Node* check_result = BuildChangeSmiToInt32(CALL_BUILTIN(
       WasmIsRttSubtype, map, rtt,
-      LOAD_INSTANCE_FIELD(NativeContext, MachineType::TaggedPointer()));
+      LOAD_INSTANCE_FIELD(NativeContext, MachineType::TaggedPointer())));
   TrapIfFalse(wasm::kTrapIllegalCast, check_result, position);
   return object;
 }
@@ -5532,7 +5566,7 @@ class WasmDecorator final : public GraphDecorator {
 void WasmGraphBuilder::AddBytecodePositionDecorator(
     NodeOriginTable* node_origins, wasm::Decoder* decoder) {
   DCHECK_NULL(decorator_);
-  decorator_ = new (graph()->zone()) WasmDecorator(node_origins, decoder);
+  decorator_ = graph()->zone()->New<WasmDecorator>(node_origins, decoder);
   graph()->AddDecorator(decorator_);
 }
 
@@ -5746,15 +5780,22 @@ class WasmWrapperGraphBuilder : public WasmGraphBuilder {
       case wasm::ValueType::kF64:
         return BuildChangeFloat64ToNumber(node);
       case wasm::ValueType::kRef:
-      case wasm::ValueType::kOptRef:
+      case wasm::ValueType::kOptRef: {
+        uint32_t representation = type.heap_representation();
+        if (representation == wasm::HeapType::kExtern ||
+            representation == wasm::HeapType::kExn ||
+            representation == wasm::HeapType::kFunc) {
+          return node;
+        }
+        // TODO(7748): Figure out a JS interop story for arrays and structs.
+        // If this is reached, then IsJSCompatibleSignature() is too permissive.
+        UNREACHABLE();
+      }
       case wasm::ValueType::kRtt:
-        // TODO(7748): Implement properly for arrays and structs, figure
-        // out what to do for RTTs.
-        // For now, we just expose the raw object for testing.
-        return node;
+        // TODO(7748): Figure out what to do for RTTs.
+        UNIMPLEMENTED();
       case wasm::ValueType::kI8:
       case wasm::ValueType::kI16:
-        UNIMPLEMENTED();
       case wasm::ValueType::kStmt:
       case wasm::ValueType::kBottom:
         UNREACHABLE();
@@ -5831,6 +5872,8 @@ class WasmWrapperGraphBuilder : public WasmGraphBuilder {
             return input;
           }
           default:
+            // If this is reached, then IsJSCompatibleSignature() is too
+            // permissive.
             UNREACHABLE();
         }
       }
@@ -6556,14 +6599,13 @@ std::unique_ptr<OptimizedCompilationJob> NewJSToWasmCompilationJob(
   //----------------------------------------------------------------------------
   std::unique_ptr<Zone> zone =
       std::make_unique<Zone>(wasm_engine->allocator(), ZONE_NAME);
-  Graph* graph = new (zone.get()) Graph(zone.get());
-  CommonOperatorBuilder* common =
-      new (zone.get()) CommonOperatorBuilder(zone.get());
-  MachineOperatorBuilder* machine = new (zone.get()) MachineOperatorBuilder(
+  Graph* graph = zone->New<Graph>(zone.get());
+  CommonOperatorBuilder* common = zone->New<CommonOperatorBuilder>(zone.get());
+  MachineOperatorBuilder* machine = zone->New<MachineOperatorBuilder>(
       zone.get(), MachineType::PointerRepresentation(),
       InstructionSelector::SupportedMachineOperatorFlags(),
       InstructionSelector::AlignmentRequirements());
-  MachineGraph* mcgraph = new (zone.get()) MachineGraph(graph, common, machine);
+  MachineGraph* mcgraph = zone->New<MachineGraph>(graph, common, machine);
 
   WasmWrapperGraphBuilder builder(zone.get(), mcgraph, sig, nullptr,
                                   StubCallMode::kCallBuiltinPointer,
@@ -6754,9 +6796,9 @@ wasm::WasmCompilationResult CompileWasmMathIntrinsic(
   // Compile a Wasm function with a single bytecode and let TurboFan
   // generate either inlined machine code or a call to a helper.
   SourcePositionTable* source_positions = nullptr;
-  MachineGraph* mcgraph = new (&zone) MachineGraph(
-      new (&zone) Graph(&zone), new (&zone) CommonOperatorBuilder(&zone),
-      new (&zone) MachineOperatorBuilder(
+  MachineGraph* mcgraph = zone.New<MachineGraph>(
+      zone.New<Graph>(&zone), zone.New<CommonOperatorBuilder>(&zone),
+      zone.New<MachineOperatorBuilder>(
           &zone, MachineType::PointerRepresentation(),
           InstructionSelector::SupportedMachineOperatorFlags(),
           InstructionSelector::AlignmentRequirements()));
@@ -6826,16 +6868,16 @@ wasm::WasmCompilationResult CompileWasmImportCallWrapper(
   // Create the Graph
   //----------------------------------------------------------------------------
   Zone zone(wasm_engine->allocator(), ZONE_NAME);
-  Graph* graph = new (&zone) Graph(&zone);
-  CommonOperatorBuilder* common = new (&zone) CommonOperatorBuilder(&zone);
-  MachineOperatorBuilder* machine = new (&zone) MachineOperatorBuilder(
+  Graph* graph = zone.New<Graph>(&zone);
+  CommonOperatorBuilder* common = zone.New<CommonOperatorBuilder>(&zone);
+  MachineOperatorBuilder* machine = zone.New<MachineOperatorBuilder>(
       &zone, MachineType::PointerRepresentation(),
       InstructionSelector::SupportedMachineOperatorFlags(),
       InstructionSelector::AlignmentRequirements());
-  MachineGraph* mcgraph = new (&zone) MachineGraph(graph, common, machine);
+  MachineGraph* mcgraph = zone.New<MachineGraph>(graph, common, machine);
 
   SourcePositionTable* source_position_table =
-      source_positions ? new (&zone) SourcePositionTable(graph) : nullptr;
+      source_positions ? zone.New<SourcePositionTable>(graph) : nullptr;
 
   WasmWrapperGraphBuilder builder(&zone, mcgraph, sig, source_position_table,
                                   StubCallMode::kCallWasmRuntimeStub,
@@ -6870,9 +6912,9 @@ wasm::WasmCode* CompileWasmCapiCallWrapper(wasm::WasmEngine* wasm_engine,
 
   // TODO(jkummerow): Extract common code into helper method.
   SourcePositionTable* source_positions = nullptr;
-  MachineGraph* mcgraph = new (&zone) MachineGraph(
-      new (&zone) Graph(&zone), new (&zone) CommonOperatorBuilder(&zone),
-      new (&zone) MachineOperatorBuilder(
+  MachineGraph* mcgraph = zone.New<MachineGraph>(
+      zone.New<Graph>(&zone), zone.New<CommonOperatorBuilder>(&zone),
+      zone.New<MachineOperatorBuilder>(
           &zone, MachineType::PointerRepresentation(),
           InstructionSelector::SupportedMachineOperatorFlags(),
           InstructionSelector::AlignmentRequirements()));
@@ -6916,14 +6958,13 @@ MaybeHandle<Code> CompileJSToJSWrapper(Isolate* isolate,
                                        const wasm::FunctionSig* sig) {
   std::unique_ptr<Zone> zone =
       std::make_unique<Zone>(isolate->allocator(), ZONE_NAME);
-  Graph* graph = new (zone.get()) Graph(zone.get());
-  CommonOperatorBuilder* common =
-      new (zone.get()) CommonOperatorBuilder(zone.get());
-  MachineOperatorBuilder* machine = new (zone.get()) MachineOperatorBuilder(
+  Graph* graph = zone->New<Graph>(zone.get());
+  CommonOperatorBuilder* common = zone->New<CommonOperatorBuilder>(zone.get());
+  MachineOperatorBuilder* machine = zone->New<MachineOperatorBuilder>(
       zone.get(), MachineType::PointerRepresentation(),
       InstructionSelector::SupportedMachineOperatorFlags(),
       InstructionSelector::AlignmentRequirements());
-  MachineGraph* mcgraph = new (zone.get()) MachineGraph(graph, common, machine);
+  MachineGraph* mcgraph = zone->New<MachineGraph>(graph, common, machine);
 
   WasmWrapperGraphBuilder builder(zone.get(), mcgraph, sig, nullptr,
                                   StubCallMode::kCallBuiltinPointer,
@@ -6962,14 +7003,13 @@ MaybeHandle<Code> CompileJSToJSWrapper(Isolate* isolate,
 Handle<Code> CompileCWasmEntry(Isolate* isolate, const wasm::FunctionSig* sig) {
   std::unique_ptr<Zone> zone =
       std::make_unique<Zone>(isolate->allocator(), ZONE_NAME);
-  Graph* graph = new (zone.get()) Graph(zone.get());
-  CommonOperatorBuilder* common =
-      new (zone.get()) CommonOperatorBuilder(zone.get());
-  MachineOperatorBuilder* machine = new (zone.get()) MachineOperatorBuilder(
+  Graph* graph = zone->New<Graph>(zone.get());
+  CommonOperatorBuilder* common = zone->New<CommonOperatorBuilder>(zone.get());
+  MachineOperatorBuilder* machine = zone->New<MachineOperatorBuilder>(
       zone.get(), MachineType::PointerRepresentation(),
       InstructionSelector::SupportedMachineOperatorFlags(),
       InstructionSelector::AlignmentRequirements());
-  MachineGraph* mcgraph = new (zone.get()) MachineGraph(graph, common, machine);
+  MachineGraph* mcgraph = zone->New<MachineGraph>(graph, common, machine);
 
   WasmWrapperGraphBuilder builder(zone.get(), mcgraph, sig, nullptr,
                                   StubCallMode::kCallBuiltinPointer,
@@ -7075,9 +7115,9 @@ wasm::WasmCompilationResult ExecuteTurbofanWasmCompilation(
                "wasm.CompileTopTier", "func_index", func_index, "body_size",
                func_body.end - func_body.start);
   Zone zone(wasm_engine->allocator(), ZONE_NAME);
-  MachineGraph* mcgraph = new (&zone) MachineGraph(
-      new (&zone) Graph(&zone), new (&zone) CommonOperatorBuilder(&zone),
-      new (&zone) MachineOperatorBuilder(
+  MachineGraph* mcgraph = zone.New<MachineGraph>(
+      zone.New<Graph>(&zone), zone.New<CommonOperatorBuilder>(&zone),
+      zone.New<MachineOperatorBuilder>(
           &zone, MachineType::PointerRepresentation(),
           InstructionSelector::SupportedMachineOperatorFlags(),
           InstructionSelector::AlignmentRequirements()));
@@ -7094,10 +7134,10 @@ wasm::WasmCompilationResult ExecuteTurbofanWasmCompilation(
   }
 
   NodeOriginTable* node_origins =
-      info.trace_turbo_json() ? new (&zone) NodeOriginTable(mcgraph->graph())
+      info.trace_turbo_json() ? zone.New<NodeOriginTable>(mcgraph->graph())
                               : nullptr;
   SourcePositionTable* source_positions =
-      new (mcgraph->zone()) SourcePositionTable(mcgraph->graph());
+      mcgraph->zone()->New<SourcePositionTable>(mcgraph->graph());
   if (!BuildGraphForWasmFunction(wasm_engine->allocator(), env, func_body,
                                  func_index, detected, mcgraph, node_origins,
                                  source_positions)) {
@@ -7247,7 +7287,7 @@ CallDescriptor* GetWasmCallDescriptor(
 
   CallDescriptor::Flags flags =
       use_retpoline ? CallDescriptor::kRetpoline : CallDescriptor::kNoFlags;
-  return new (zone) CallDescriptor(       // --
+  return zone->New<CallDescriptor>(       // --
       descriptor_kind,                    // kind
       target_type,                        // target MachineType
       target_loc,                         // target location
@@ -7326,7 +7366,7 @@ CallDescriptor* ReplaceTypeInCallDescriptorWith(
     }
   }
 
-  return new (zone) CallDescriptor(                    // --
+  return zone->New<CallDescriptor>(                    // --
       call_descriptor->kind(),                         // kind
       call_descriptor->GetInputType(0),                // target MachineType
       call_descriptor->GetInputLocation(0),            // target location
